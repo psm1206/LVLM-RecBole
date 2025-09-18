@@ -2,6 +2,7 @@ import os
 import json
 import ast
 import pickle
+import gc
 import pandas as pd
 from typing import Dict, List, Tuple
 
@@ -334,6 +335,10 @@ def main():
     plt.colorbar()
     plt.savefig(os.path.join(save_dir, f'text_image_similarity_{dataset_name}_{emb_encoder_name}.png'))
     plt.close()
+
+    del text_arr, image_arr, similarity
+    gc.collect()
+    torch.cuda.empty_cache()
 
     # fused embeddings
     fused_emb_path = os.path.join(save_dir, f'{emb_encoder_name}_fused.pkl')
