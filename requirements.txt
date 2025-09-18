@@ -16,3 +16,5 @@ ray
 texttable
 transformers==4.51.0
 accelerate
+matplotlib
+bs4
