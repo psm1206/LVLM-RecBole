@@ -255,8 +255,8 @@ def main():
     batch_size = args.batch_size
     gpu_id = args.gpu_id
 
-    short_name_dict = {'Alibaba-NLP/gme-Qwen2-VL-2B-Instruct': 'qwen2vl2b',
-                        'Alibaba-NLP/gme-Qwen2-VL-7B-Instruct': 'qwen2vl7b'}
+    short_name_dict = {'Alibaba-NLP/gme-Qwen2-VL-2B-Instruct': 'gme_qwen2vl2b',
+                        'Alibaba-NLP/gme-Qwen2-VL-7B-Instruct': 'gme_qwen2vl7b'}
 
     emb_encoder_name = short_name_dict[embedding_encoder]
 
