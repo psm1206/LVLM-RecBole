@@ -51,5 +51,5 @@ valid_metric_bigger: True       # (bool) Whether to take a bigger valid metric v
 eval_batch_size: 4096           # (int) The evaluation batch size.
 metric_decimal_place: 4         # (int) The decimal place of metric scores.
 
-text_encoder: nvembv2
+text_encoder: None
 aug: True
