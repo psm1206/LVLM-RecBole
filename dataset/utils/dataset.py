@@ -101,6 +101,7 @@ amazon_dataset2fullname = {
     'books': 'Books',
     'sports': 'Sports_and_Outdoors',
     'scientifics': 'Industrial_and_Scientific',
+    'home': 'Home_and_Kitchen',
 }
 
 amazon2023_dataset2main_category = {
