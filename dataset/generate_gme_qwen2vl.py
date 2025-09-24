@@ -176,6 +176,7 @@ def batched(iterable: List, batch_size: int) -> List[List]:
 
 def generate_embeddings_with_gme(model, asin_to_text, asin_to_image, batch_size=8, modality='text'):
     embeds = {}
+    error_count = 0
 
     if modality == 'text':
         asins_with_text = [asin for asin, txt in asin_to_text.items() if isinstance(txt, str) and txt.strip()]
@@ -205,6 +206,7 @@ def generate_embeddings_with_gme(model, asin_to_text, asin_to_image, batch_size=
                             emb = model.get_image_embeddings(images=[asin_to_image[a]])
                         embeds[a] = emb.detach().cpu().numpy()[0]
                     except Exception:
+                        error_count += 1
                         print(f"Error getting image embeddings for {a}")
                         continue
 
@@ -228,10 +230,14 @@ def generate_embeddings_with_gme(model, asin_to_text, asin_to_image, batch_size=
                             emb = model.get_fused_embeddings(texts=[asin_to_text[a]], images=[asin_to_image[a]])
                         embeds[a] = emb.detach().cpu().numpy()[0]
                     except Exception:
+                        error_count += 1
                         print(f"Error getting fused embeddings for {a}")
                         continue
     else:
         raise ValueError(f"Invalid modality: {modality}")
+    
+    print(f"{modality} embeddings error count: {error_count}")
+    print(f"{modality} embeddings error rate: {error_count / len(embeds) * 100:.2f}%")
 
     return embeds
 
