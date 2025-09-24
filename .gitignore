@@ -49,3 +49,4 @@ significance_test.py
 *.yml
 *.pkl
 /tmp*
+*.json
