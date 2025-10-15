@@ -1,0 +1,204 @@
+# -*- coding: utf-8 -*-
+# @Time    : 2020/9/18 11:33
+# @Author  : Hui Wang
+# @Email   : hui.wang@ruc.edu.cn
+
+"""
+SASRec
+################################################
+
+Reference:
+    Wang-Cheng Kang et al. "Self-Attentive Sequential Recommendation." in ICDM 2018.
+
+Reference:
+    https://github.com/kang205/SASRec
+
+"""
+
+import torch
+from torch import nn
+from torch.nn import functional as F
+import numpy as np
+import json
+import pickle
+from sklearn.decomposition import PCA
+import time
+import os
+
+from recbole.model.abstract_recommender import SequentialRecommender
+from recbole.model.layers import TransformerEncoder
+from recbole.model.loss import BPRLoss
+
+
+class LLM2X_Fused_SASRec(SequentialRecommender):
+    r"""
+    SASRec is the first sequential recommender based on self-attentive mechanism.
+
+    NOTE:
+        In the author's implementation, the Point-Wise Feed-Forward Network (PFFN) is implemented
+        by CNN with 1x1 kernel. In this implementation, we follows the original BERT implementation
+        using Fully Connected Layer to implement the PFFN.
+    """
+
+    def __init__(self, config, dataset):
+        super(LLM2X_Fused_SASRec, self).__init__(config, dataset)
+
+        # load parameters info
+        self.n_layers = config["n_layers"]
+        self.n_heads = config["n_heads"]
+        self.hidden_size = config["hidden_size"]  # same as embedding_size
+        self.inner_size = config[
+            "inner_size"
+        ]  # the dimensionality in feed-forward layer
+        self.hidden_dropout_prob = config["hidden_dropout_prob"]
+        self.attn_dropout_prob = config["attn_dropout_prob"]
+        self.hidden_act = config["hidden_act"]  
+        self.layer_norm_eps = config["layer_norm_eps"]
+
+        self.initializer_range = config["initializer_range"]
+        self.loss_type = config["loss_type"]
+
+        self.gamma = config['gamma']
+        
+        # LLM embedding load (text and image)
+        dataset_path = f'./dataset/{config["dataset"]}'
+        id_map = json.load(open(f'{dataset_path}/id_map.json', "r"))["item2id"]
+        loaded_feat_text = pickle.load(open(f'{dataset_path}/{config["text_encoder"]}_text.pkl', "rb"))
+        loaded_feat_image = pickle.load(open(f'{dataset_path}/{config["text_encoder"]}_image.pkl', "rb"))
+        mapped_feat_text = np.zeros((self.n_items, loaded_feat_text.shape[1]), dtype=np.float32)
+        mapped_feat_image = np.zeros((self.n_items, loaded_feat_image.shape[1]), dtype=np.float32)
+
+        for i, token in enumerate(dataset.field2id_token['item_id']):
+            if token == '[PAD]': continue
+            token_idx = int(id_map[token])-1
+            mapped_feat_text[i] = loaded_feat_text[token_idx]
+            mapped_feat_image[i] = loaded_feat_image[token_idx]
+        
+        # text-image similarity
+        text_image_similarity = (mapped_feat_text * mapped_feat_image).sum(axis=-1)
+        text_image_similarity = text_image_similarity.reshape(-1, 1)
+
+        # mapped_feat_text와 mapped_feat_image를 text-image similarity에 따라 조절
+        gate = 1 - text_image_similarity
+        mapped_feat_image = self.gamma * gate * mapped_feat_image
+        mapped_feat_fused = mapped_feat_text + mapped_feat_image
+
+        # convert it into unit vector
+        eps = 1e-12
+        norm = np.linalg.norm(mapped_feat_fused, axis=1, keepdims=True)
+        mapped_feat_fused = mapped_feat_fused / np.maximum(norm, eps)
+
+        pca = PCA(n_components=self.hidden_size)
+        print(f"[LLM2X_Fused_SASRec] PCA fit_transform started for input shape {mapped_feat_fused[1:,:].shape}")
+
+        # Text PCA
+        pca_text_path = f'{dataset_path}/pca_{config["text_encoder"]}_text_image_norm_gamma_{self.gamma}.npy'
+        if os.path.exists(pca_text_path):
+            reduced_llm_item_fused_emb = np.load(pca_text_path)
+            print(f"[LLM2X_Fused_SASRec] PCA text fit_transform loaded from cache for input shape {mapped_feat_fused[1:,:].shape}")
+        else:
+            _pca_start = time.perf_counter()
+            reduced_llm_item_fused_emb = pca.fit_transform(mapped_feat_fused[1:,:])
+            _pca_elapsed = time.perf_counter() - _pca_start
+            # np.save(pca_text_path, reduced_llm_item_fused_emb)
+            print(f"[LLM2X_Fused_SASRec] PCA text fit_transform took {_pca_elapsed:.3f}s for input shape {mapped_feat_fused[1:,:].shape} and saved to cache")
+
+        reduced_llm_item_fused_emb = np.concatenate((np.zeros((1, self.hidden_size)), reduced_llm_item_fused_emb), axis=0)  # zero padding for [PAD] token
+
+        self.item_embedding = nn.Embedding.from_pretrained(torch.Tensor(reduced_llm_item_fused_emb))
+        self.item_embedding.weight.requires_grad = True
+
+        self.position_embedding = nn.Embedding(self.max_seq_length, self.hidden_size)
+        self.trm_encoder = TransformerEncoder(
+            n_layers=self.n_layers,
+            n_heads=self.n_heads,
+            hidden_size=self.hidden_size,
+            inner_size=self.inner_size,
+            hidden_dropout_prob=self.hidden_dropout_prob,
+            attn_dropout_prob=self.attn_dropout_prob,
+            hidden_act=self.hidden_act,
+            layer_norm_eps=self.layer_norm_eps,
+        )
+
+        self.LayerNorm = nn.LayerNorm(self.hidden_size, eps=self.layer_norm_eps)
+        self.dropout = nn.Dropout(self.hidden_dropout_prob)
+
+        if self.loss_type == "BPR":
+            self.loss_fct = BPRLoss()
+        elif self.loss_type == "CE":
+            self.loss_fct = nn.CrossEntropyLoss()
+        else:
+            raise NotImplementedError("Make sure 'loss_type' in ['BPR', 'CE']!")
+
+        # parameters initialization
+        self.apply(self._init_weights)
+
+    def _init_weights(self, module):
+        """Initialize the weights"""
+        if isinstance(module, (nn.Linear, nn.Embedding)) and module is not self.item_embedding:
+            # Slightly different from the TF version which uses truncated_normal for initialization
+            # cf https://github.com/pytorch/pytorch/pull/5617
+            module.weight.data.normal_(mean=0.0, std=self.initializer_range)
+        elif isinstance(module, nn.LayerNorm):
+            module.bias.data.zero_()
+            module.weight.data.fill_(1.0)
+        if isinstance(module, nn.Linear) and module.bias is not None:
+            module.bias.data.zero_()
+
+    def forward(self, item_seq, item_seq_len):
+        position_ids = torch.arange(
+            item_seq.size(1), dtype=torch.long, device=item_seq.device
+        )
+        position_ids = position_ids.unsqueeze(0).expand_as(item_seq)
+        position_embedding = self.position_embedding(position_ids)
+
+        item_emb = self.item_embedding(item_seq)
+
+        input_emb = item_emb + position_embedding
+        input_emb = self.LayerNorm(input_emb)
+        input_emb = self.dropout(input_emb)
+
+        extended_attention_mask = self.get_attention_mask(item_seq)
+
+        trm_output = self.trm_encoder(
+            input_emb, extended_attention_mask, output_all_encoded_layers=True
+        )
+        output = trm_output[-1]
+        output = self.gather_indexes(output, item_seq_len - 1)
+        return output  # [B H]
+
+    def calculate_loss(self, interaction):
+        item_seq = interaction[self.ITEM_SEQ]
+        item_seq_len = interaction[self.ITEM_SEQ_LEN]
+        seq_output = self.forward(item_seq, item_seq_len)
+        pos_items = interaction[self.POS_ITEM_ID]
+        if self.loss_type == "BPR":
+            neg_items = interaction[self.NEG_ITEM_ID]
+            pos_items_emb = self.item_embedding(pos_items)
+            neg_items_emb = self.item_embedding(neg_items)
+            pos_score = torch.sum(seq_output * pos_items_emb, dim=-1)  # [B]
+            neg_score = torch.sum(seq_output * neg_items_emb, dim=-1)  # [B]
+            loss = self.loss_fct(pos_score, neg_score)
+            return loss
+        else:  # self.loss_type = 'CE'
+            test_item_emb = self.item_embedding.weight
+            logits = torch.matmul(seq_output, test_item_emb.transpose(0, 1))
+            loss = self.loss_fct(logits, pos_items)
+            return loss
+
+    def predict(self, interaction):
+        item_seq = interaction[self.ITEM_SEQ]
+        item_seq_len = interaction[self.ITEM_SEQ_LEN]
+        test_item = interaction[self.ITEM_ID]
+        seq_output = self.forward(item_seq, item_seq_len)
+        test_item_emb = self.item_embedding.weight
+        scores = torch.mul(seq_output, test_item_emb).sum(dim=1)  # [B]
+        return scores
+
+    def full_sort_predict(self, interaction):
+        item_seq = interaction[self.ITEM_SEQ]
+        item_seq_len = interaction[self.ITEM_SEQ_LEN]
+        seq_output = self.forward(item_seq, item_seq_len)
+        test_items_emb = self.item_embedding.weight
+        scores = torch.matmul(seq_output, test_items_emb.transpose(0, 1))  # [B n_items]
+        return scores
