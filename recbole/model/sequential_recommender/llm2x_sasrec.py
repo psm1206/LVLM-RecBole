@@ -28,6 +28,8 @@ import os
 from recbole.model.abstract_recommender import SequentialRecommender
 from recbole.model.layers import TransformerEncoder
 from recbole.model.loss import BPRLoss
+
+
 class LLM2X_SASRec(SequentialRecommender):
     r"""
     SASRec is the first sequential recommender based on self-attentive mechanism.

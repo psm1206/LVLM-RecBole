@@ -201,8 +201,8 @@ def run_recbole(
     file_exists = save_path.exists()
     with open(save_path, 'a', encoding='utf-8') as file:
         if not file_exists:
-            file.write(f"model, seed, text_enc, valid ndcg@10, {key_str}, {head_key_str}, {tail_key_str}\n")
-        file.write(f"{config['model']}, {config['seed']}, {config['text_encoder']}, {str(best_valid_result['ndcg@10'])}, {test_str}, {head_test_str}, {tail_test_str}\n")
+            file.write(f"model, seed, text_enc, valid ndcg@20, {key_str}, {head_key_str}, {tail_key_str}\n")
+        file.write(f"{config['model']}, {config['seed']}, {config['text_encoder']}, {str(best_valid_result['ndcg@20'])}, {test_str}, {head_test_str}, {tail_test_str}\n")
     print("----------------------------------")
     
     result = {
