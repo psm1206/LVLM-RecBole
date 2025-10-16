@@ -197,12 +197,20 @@ def run_recbole(
     from pathlib import Path
     save_dir = Path(result_path)
     save_dir.mkdir(parents=True, exist_ok=True)
-    save_path = save_dir / f"{config['dataset']}_{config['model']}_aug_{config['aug']}.csv"
+    if config['model'].lower() == 'lvlm_emb_zeroshot':
+        save_path = save_dir / f"{config['dataset']}_{config['model']}.csv"
+        header = f"model, seed, text_enc, agg_method, use_pca, valid ndcg@20, {key_str}, {head_key_str}, {tail_key_str}\n"
+        write_str = f"{config['model']}, {config['seed']}, {config['text_encoder']}, {config['agg_method']}, {config['use_pca']}, 0, {test_str}, {head_test_str}, {tail_test_str}\n"
+    else:
+        save_path = save_dir / f"{config['dataset']}_{config['model']}_aug_{config['aug']}.csv"
+        header = f"model, seed, text_enc, valid ndcg@20, {key_str}, {head_key_str}, {tail_key_str}\n"
+        write_str = f"{config['model']}, {config['seed']}, {config['text_encoder']}, {str(best_valid_result['ndcg@20'])}, {test_str}, {head_test_str}, {tail_test_str}\n"
+    
     file_exists = save_path.exists()
     with open(save_path, 'a', encoding='utf-8') as file:
         if not file_exists:
-            file.write(f"model, seed, text_enc, valid ndcg@20, {key_str}, {head_key_str}, {tail_key_str}\n")
-        file.write(f"{config['model']}, {config['seed']}, {config['text_encoder']}, {str(best_valid_result['ndcg@20'])}, {test_str}, {head_test_str}, {tail_test_str}\n")
+            file.write(header)
+        file.write(write_str)
     print("----------------------------------")
     
     result = {
