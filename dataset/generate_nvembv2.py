@@ -1,5 +1,4 @@
 import os
-import pandas as pd
 from utils.dataset import seed_everything, parse_args
 
 from transformers import AutoModel

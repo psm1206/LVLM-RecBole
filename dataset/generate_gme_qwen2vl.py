@@ -257,14 +257,14 @@ def main():
     seed_everything(42)
     args = parse_args()
     dataset_name = args.dataset  # e.g., 'beauty'
-    embedding_encoder = args.embedding_encoder
+    embedding_model = args.embedding_model
     batch_size = args.batch_size
     gpu_id = args.gpu_id
 
     short_name_dict = {'Alibaba-NLP/gme-Qwen2-VL-2B-Instruct': 'gme_qwen2vl2b',
                         'Alibaba-NLP/gme-Qwen2-VL-7B-Instruct': 'gme_qwen2vl7b'}
 
-    emb_encoder_name = short_name_dict[embedding_encoder]
+    embedding_model_saved_name = short_name_dict[embedding_model]
 
     asin_to_text, asin_to_image = load_metadata(dataset_name)
     id2item = load_id2item(dataset_name)
@@ -273,10 +273,10 @@ def main():
     asin_to_text = {asin: text for asin, text in asin_to_text.items() if asin in id2item.values()}
     asin_to_image = {asin: url for asin, url in asin_to_image.items() if asin in id2item.values()}
 
-    print(f'Load {embedding_encoder} model')
+    print(f'Load {embedding_model} model')
     device = f'cuda:{gpu_id}' if torch.cuda.is_available() else 'cpu'
     model = AutoModel.from_pretrained(
-        embedding_encoder,
+        embedding_model,
         torch_dtype='float16',
         trust_remote_code=True,
     )
@@ -292,7 +292,7 @@ def main():
     os.makedirs(save_dir, exist_ok=True)
 
     # text embeddings
-    text_emb_path = os.path.join(save_dir, f'{emb_encoder_name}_text.pkl')
+    text_emb_path = os.path.join(save_dir, f'{embedding_model_saved_name}_text.pkl')
     if os.path.exists(text_emb_path):
         print(f"Text embeddings already exist: {text_emb_path}")
     else:
@@ -310,7 +310,7 @@ def main():
             print('No text embeddings produced.')
 
     # image embeddings
-    image_emb_path = os.path.join(save_dir, f'{emb_encoder_name}_image.pkl')
+    image_emb_path = os.path.join(save_dir, f'{embedding_model_saved_name}_image.pkl')
     if os.path.exists(image_emb_path):
         print(f"Image embeddings already exist: {image_emb_path}")
     else:
@@ -339,7 +339,7 @@ def main():
     plt.figure(figsize=(10, 10))
     plt.imshow(similarity, cmap='viridis')
     plt.colorbar()
-    plt.savefig(os.path.join(save_dir, f'text_image_similarity_{dataset_name}_{emb_encoder_name}.png'))
+    plt.savefig(os.path.join(save_dir, f'text_image_similarity_{dataset_name}_{embedding_model_saved_name}.png'))
     plt.close()
 
     del text_arr, image_arr, similarity
@@ -347,7 +347,7 @@ def main():
     torch.cuda.empty_cache()
 
     # fused embeddings
-    fused_emb_path = os.path.join(save_dir, f'{emb_encoder_name}_fused.pkl')
+    fused_emb_path = os.path.join(save_dir, f'{embedding_model_saved_name}_fused.pkl')
     if os.path.exists(fused_emb_path):
         print(f"Fused embeddings already exist: {fused_emb_path}")
     else:

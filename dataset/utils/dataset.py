@@ -11,7 +11,9 @@ def parse_args():
     parser.add_argument('--num_cores', type=int, default=10)
     parser.add_argument('--gpu_id', type=int, default=0, help='ID of running GPU')
     parser.add_argument('--batch_size', type=int, default=64, help='Batch size')
-    parser.add_argument('--embedding_encoder', type=str, default='Alibaba-NLP/gme-Qwen2-VL-2B-Instruct', help='Embedding encoder')
+
+    parser.add_argument('--embedding_model', type=str, default='Alibaba-NLP/gme-Qwen2-VL-2B-Instruct', help='Embedding encoder')
+    parser.add_argument('--generative_model', type=str, default='Qwen/Qwen2-VL-2B-Instruct', help='Generative decoder')
     
     return parser.parse_args()
 
