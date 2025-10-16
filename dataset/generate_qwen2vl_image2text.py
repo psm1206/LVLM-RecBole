@@ -397,6 +397,13 @@ def to_ordered_array(embeds, id2item, fill_dim: int) -> np.ndarray:
     return arr
 
 
+# Determine dims using any available vector per modality
+def pick_dim(d) -> int:
+    for v in d.values():
+        return int(v.shape[-1])
+    return 0
+
+
 def main():
     seed_everything(42)
     args = parse_args()
@@ -459,7 +466,7 @@ def main():
         image2text_embeds = generate_embeddings_with_gme(
             model, asin_to_text, asin_to_image, asin_to_caption, batch_size, modality='image2text'
         )
-        image2text_dim = image2text_embeds.shape[-1]
+        image2text_dim = pick_dim(image2text_embeds)
         image2text_arr = to_ordered_array(image2text_embeds, id2item, image2text_dim)
         with open(image2text_emb_path, 'wb') as f:
             pickle.dump(image2text_arr, f)
@@ -474,7 +481,7 @@ def main():
         fused_image2text_embeds = generate_embeddings_with_gme(
             model, asin_to_text, asin_to_image, asin_to_caption, batch_size, modality='image2text_fused'
         )
-        fused_image2text_dim = fused_image2text_embeds.shape[-1]
+        fused_image2text_dim = pick_dim(fused_image2text_embeds)
         fused_image2text_arr = to_ordered_array(fused_image2text_embeds, id2item, fused_image2text_dim)
         with open(fused_image2text_emb_path, 'wb') as f:
             pickle.dump(fused_image2text_arr, f)
