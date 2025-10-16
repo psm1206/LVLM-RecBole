@@ -1,0 +1,3 @@
+hidden_size: 64                 # (int) The number of features in the hidden state.
+agg_method: 'exp_decay'        # (str) The aggregation method. Range in ['exp_decay', 'mean'].
+use_pca: False                   # (bool) Whether to use PCA.
