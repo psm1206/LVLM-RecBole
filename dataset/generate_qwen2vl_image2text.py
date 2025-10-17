@@ -180,8 +180,8 @@ def batched(iterable: List, batch_size: int) -> List[List]:
 
 def generate_text_description_from_image_with_vlm(asin_to_image, asin_to_title, batch_size, vlm_model_name, device):
     """
-    VLM으로 각 이미지에 대한 상품 설명 문장을 생성한다.
-    반환 형태: {asin: 상품 설명 문장}
+    Generated text description is used for image2text embedding.
+    Return format: {asin: {caption: text description, title: title, image_url: image url}}
     """
     asin_to_caption: Dict[str, str] = {}
     error_count = 0
