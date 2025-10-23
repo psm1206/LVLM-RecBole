@@ -3,6 +3,7 @@ import json
 import ast
 import pickle
 import gc
+import time
 import pandas as pd
 from typing import Dict, List, Tuple
 
@@ -125,9 +126,6 @@ def load_metadata(dataset_name: str) -> Tuple[Dict[str, str], Dict[str, str]]:
                 'imUrl': obj.get('imUrl', ''),
             })
 
-    if not rows:
-        return asin_to_text, asin_to_title, asin_to_image
-
     df = pd.DataFrame(rows)
 
     string_cols = ['asin', 'title', 'price', 'brand', 'categories', 'description', 'imUrl']
@@ -159,8 +157,7 @@ def load_metadata(dataset_name: str) -> Tuple[Dict[str, str], Dict[str, str]]:
             'description': row.get('description', ''),
         }
         text_formatted = _build_text(obj_clean, dataset_full_name)
-        if text_formatted:
-            asin_to_text[asin] = text_formatted
+        asin_to_text[asin] = text_formatted
         asin_to_title[asin] = row.get('title', '')
 
     return asin_to_text, asin_to_title, asin_to_image
@@ -219,8 +216,8 @@ def generate_text_description_from_image_with_vlm(asin_to_image, asin_to_title, 
         # batch processing
         try:
             texts = [
-                processor.apply_chat_template(m, tokenize=False, add_generation_prompt=True)
-                for m in messages
+                processor.apply_chat_template(msg, tokenize=False, add_generation_prompt=True)
+                for msg in messages
             ]
             image_inputs, video_inputs = process_vision_info(messages)
             inputs = processor(
@@ -229,21 +226,20 @@ def generate_text_description_from_image_with_vlm(asin_to_image, asin_to_title, 
                 videos=video_inputs,
                 padding=True,
                 return_tensors="pt",
-            )
-
+            )            
             inputs = inputs.to(device)
-
+                        
             with torch.inference_mode():
                 generated_ids = vlm_model.generate(**inputs, max_new_tokens=128)
-
-            # remove prompt tokens and decoding
+            
+            # Remove prompt tokens and decode
             generated_ids_trimmed = [
                 out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
             ]
             captions = processor.batch_decode(
                 generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
             )
-
+            
             for a, c, t, u in zip(batch_asins, captions, titles, urls):
                 asin_to_caption[a] = {
                     'caption': c,
@@ -253,6 +249,7 @@ def generate_text_description_from_image_with_vlm(asin_to_image, asin_to_title, 
 
         # individual processing
         except Exception:
+            print(f"Error processing batch: Fallback to individual processing")
             for a in batch_asins:
                 url = asin_to_image[a]
                 title = asin_to_title[a]
@@ -412,6 +409,7 @@ def main():
     generative_model = args.generative_model
     batch_size = args.batch_size
     gpu_id = args.gpu_id
+    device = f'cuda:{gpu_id}' if torch.cuda.is_available() else 'cpu'
 
     short_name_dict = {'Qwen/Qwen2-VL-2B-Instruct': 'qwen2vl2b',
                         'Qwen/Qwen2-VL-7B-Instruct': 'qwen2vl7b',
@@ -421,21 +419,44 @@ def main():
     embedding_model_saved_name = short_name_dict[embedding_model]
     generative_model_saved_name = short_name_dict[generative_model]
 
-    asin_to_text, asin_to_title, asin_to_image = load_metadata(dataset_name)
-    id2item = load_id2item(dataset_name)
-
-    # filtering asin_to_text and asin_to_image with id2item
-    asin_to_text = {asin: text for asin, text in asin_to_text.items() if asin in id2item.values()}
-    asin_to_title = {asin: title for asin, title in asin_to_title.items() if asin in id2item.values()}
-    asin_to_image = {asin: url for asin, url in asin_to_image.items() if asin in id2item.values()}
-
-    device = f'cuda:{gpu_id}' if torch.cuda.is_available() else 'cpu'
-
     save_dir = dataset_name
     os.makedirs(save_dir, exist_ok=True)
 
+    # Check if asin_to_text, asin_to_title, asin_to_image already exist
+    asin_to_text_path = os.path.join(save_dir, 'asin_to_text.json')
+    asin_to_title_path = os.path.join(save_dir, 'asin_to_title.json')
+    asin_to_image_path = os.path.join(save_dir, 'asin_to_image.json')
+    if os.path.exists(asin_to_text_path) and os.path.exists(asin_to_title_path) and os.path.exists(asin_to_image_path):
+        asin_to_text = json.load(open(asin_to_text_path, 'r', encoding='utf-8'))
+        asin_to_title = json.load(open(asin_to_title_path, 'r', encoding='utf-8'))
+        asin_to_image = json.load(open(asin_to_image_path, 'r', encoding='utf-8'))
+        print(f"Loaded existed asin_to_text, asin_to_title, and asin_to_image")
+    else:
+        print(f"Saving asin_to_text, asin_to_title, and asin_to_image")
+        st_time = time.time()
+        asin_to_text, asin_to_title, asin_to_image = load_metadata(dataset_name)
+        
+        # Filter asin_to_text, asin_to_title, and asin_to_image with id2item
+        id2item = load_id2item(dataset_name)
+        asin_to_text = {asin: text for asin, text in asin_to_text.items() if asin in id2item.values()}
+        asin_to_title = {asin: title for asin, title in asin_to_title.items() if asin in id2item.values()}
+        asin_to_image = {asin: url for asin, url in asin_to_image.items() if asin in id2item.values()}
+
+        # Save asin_to_text, asin_to_title, and asin_to_image
+        with open(asin_to_text_path, 'w', encoding='utf-8') as f:
+            json.dump(asin_to_text, f, ensure_ascii=False, indent=2)
+        print(f"Saved asin_to_text: {len(asin_to_text)} -> {asin_to_text_path}")
+        with open(asin_to_title_path, 'w', encoding='utf-8') as f:
+            json.dump(asin_to_title, f, ensure_ascii=False, indent=2)
+        print(f"Saved asin_to_title: {len(asin_to_title)} -> {asin_to_title_path}")
+        with open(asin_to_image_path, 'w', encoding='utf-8') as f:
+            json.dump(asin_to_image, f, ensure_ascii=False, indent=2)
+        print(f"Saved asin_to_image: {len(asin_to_image)} -> {asin_to_image_path}")
+
+        print(f"Load + Save time taken: {time.time() - st_time:.2f} seconds")
+
     # text description from image
-    image2text_path = os.path.join(save_dir, f'{generative_model_saved_name}_image2text.json')
+    image2text_path = os.path.join(save_dir, f'{generative_model_saved_name}_image2text_test.json')
     if os.path.exists(image2text_path):
         print(f"Image2text already exist: {image2text_path}")
         asin_to_caption = json.load(open(image2text_path, 'r', encoding='utf-8'))
@@ -447,7 +468,7 @@ def main():
             json.dump(asin_to_caption, f, ensure_ascii=False, indent=2)
         print(f"Saved image2text captions: {len(asin_to_caption)} -> {image2text_path}")
 
-    # text embeddings
+    # Load embedding model
     print(f'Load {embedding_model} model')
     model = AutoModel.from_pretrained(
         embedding_model,
@@ -456,10 +477,14 @@ def main():
     )
     model = model.to(device)
 
-    # extract caption from asin_to_caption
+    # Extract caption from asin_to_caption
     asin_to_caption = {asin: item_metadata['caption'] for asin, item_metadata in asin_to_caption.items()}
 
-    image2text_emb_path = os.path.join(save_dir, f'{embedding_model_saved_name}_image2text.pkl')
+    embedding_dir = os.path.join(save_dir, f'{generative_model_saved_name}')
+    os.makedirs(embedding_dir, exist_ok=True)
+
+    # Image2text embeddings
+    image2text_emb_path = os.path.join(embedding_dir, f'{embedding_model_saved_name}_image2text.pkl')
     if os.path.exists(image2text_emb_path):
         print(f"Image2text embeddings already exist: {image2text_emb_path}")
     else:
@@ -472,9 +497,8 @@ def main():
             pickle.dump(image2text_arr, f)
         print(f"Saved image2text embeddings: {image2text_arr.shape} -> {image2text_emb_path}")
 
-        image2text_emb_path = os.path.join(save_dir, f'{embedding_model_saved_name}_image2text.pkl')
-
-    fused_image2text_emb_path = os.path.join(save_dir, f'{embedding_model_saved_name}_fused_image2text.pkl')
+    # Fused image2text embeddings
+    fused_image2text_emb_path = os.path.join(embedding_dir, f'{embedding_model_saved_name}_fused_image2text.pkl')
     if os.path.exists(fused_image2text_emb_path):
         print(f"Fused image2text embeddings already exist: {fused_image2text_emb_path}")
     else:
