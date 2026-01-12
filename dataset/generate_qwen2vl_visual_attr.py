@@ -242,31 +242,37 @@ def generate_text_description_from_image_with_vlm(asin_to_image, asin_to_title, 
 
     return asin_to_caption
 
-def generate_visual_attributes_with_vlm(asin_to_image, asin_to_title, vlm_model_name, device):
+def generate_visual_attributes_with_vlm(asin_to_image, asin_to_title, asin_to_description, vlm_model_name, device):
     """
-    이미지로부터 구조화된 속성과 정제된 설명을 추출합니다.
+    Generated visual attributes are used for text embedding.
+    Return format: {asin: {visual_style: visual style, material: material, purpose: purpose, usage_context: usage context}}
     """
-    asin_to_visual_attr: Dict[str, dict] = {}
+    asin_to_visual_attr: Dict[str, str] = {}
     error_count = 0
     
-    # 텍스트 정보와의 중복을 최소화하고 시각적 '특징'에 집중하는 프롬프트
     PROMPT_TEMPLATE = (
         "You are a professional beauty product analyst.\n"
-        "Analyze the product image and provide exactly four attributes in keywords. "
-        "Do not use full sentences. Use 1-3 words for each value.\n\n"
-        "1. Visual Style: (e.g., Professional, Luxurious, Minimalist, Eco-friendly)\n"
-        "2. Material: (e.g., Matte Plastic, Clear Glass, Metal, Cardboard)\n"
-        "3. Purpose: (e.g., Skin Hydration, Sun Protection, Color Correction, Hair Styling)\n"
-        "4. Usage Context: (e.g., Daily Home Use, Professional Salon, Travel, Gift-giving)\n\n"
-        "Output Format:\n"
+        "Your task is to analyze the product's **Title**, **Description**, and **Image** to extract exactly four key attributes in keywords.\n\n"
+        "### Guidelines:\n"
+        "1. **Reference All Inputs:** Use the Title and Description to understand the brand identity and functions, and the Image to confirm visual/physical details.\n"
+        "2. **Be Creative & Accurate:** Do not limit yourself to the examples provided in parentheses. Use the most precise and descriptive terms that fit this specific product.\n"
+        "3. **Format:** Use 1-3 words for each attribute. No full sentences.\n\n"
+        "### Product Information:\n"
+        "- **Title:** {title}\n"
+        "- **Existing Description:** {description}\n\n"
+        "### Attributes to Extract:\n"
+        "1. Visual Style: (Look beyond examples like Professional/Minimalist; describe the actual aesthetic)\n"
+        "2. Material: (Identify the packaging/formulation texture; e.g., Frosted Glass, Creamy Liquid, Recycled Paper)\n"
+        "3. Purpose: (Specify the core benefit; e.g., Pore Tightening, Long-lasting Wear, Deep Nourishment)\n"
+        "4. Usage Context: (Identify the ideal setting; e.g., Nighttime Routine, On-the-go Touchups, Luxury Gift)\n\n"
+        "### Output Format:\n"
         "Visual Style: <value>\n"
         "Material: <value>\n"
         "Purpose: <value>\n"
-        "Usage Context: <value>\n"
+        "Usage Context: <value>\n\n"
         "Assistant:"
     )
 
-    # 모델 및 프로세서 로드는 기존과 동일
     vlm_model = Qwen2VLForConditionalGeneration.from_pretrained(
         vlm_model_name, torch_dtype="auto", device_map=device
     )
@@ -275,14 +281,15 @@ def generate_visual_attributes_with_vlm(asin_to_image, asin_to_title, vlm_model_
     asins_with_image = [asin for asin, url in asin_to_image.items() if isinstance(url, str) and url.strip()]
     for asin in tqdm(asins_with_image, desc='Extracting Visual Attributes'):
         url = asin_to_image[asin]
-        # title = asin_to_title[asin]
+        title = asin_to_title[asin]
+        description = asin_to_description[asin]
         
         try:
             messages = [{
                 "role": "user",
                 "content": [
                     {"type": "image", "image": url},
-                    {"type": "text", "text": PROMPT_TEMPLATE},
+                    {"type": "text", "text": PROMPT_TEMPLATE.format(title=title, description=description)},
                 ],
             }]
             text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
@@ -295,7 +302,6 @@ def generate_visual_attributes_with_vlm(asin_to_image, asin_to_title, vlm_model_
             out_ids_trimmed = out_ids[0][len(inputs.input_ids[0]):]
             output = processor.decode(out_ids_trimmed, skip_special_tokens=True).strip()
             
-            # 파싱 로직
             attr = {'style': 'N/A', 'material': 'N/A', 'purpose': 'N/A', 'context': 'N/A'}
             for line in output.split('\n'):
                 line = line.strip()
@@ -315,7 +321,6 @@ def generate_visual_attributes_with_vlm(asin_to_image, asin_to_title, vlm_model_
                 f"Usage Context is {attr['context']}."
             )
             
-            # ASIN별로 완성된 문장을 바로 할당
             asin_to_visual_attr[asin] = formatted_text
 
         except Exception as e:
@@ -558,13 +563,15 @@ def main():
     # Check and load/create each asin_to file individually
     asin_to_text_path = os.path.join(save_dir, 'asin_to_text.json')
     asin_to_title_path = os.path.join(save_dir, 'asin_to_title.json')
+    asin_to_description_path = os.path.join(save_dir, 'asin_to_description.json')
     asin_to_image_path = os.path.join(save_dir, 'asin_to_image.json')
-
+    
     # Initialize dictionaries
     asin_to_text = {}
     asin_to_title = {}
+    asin_to_description = {}
     asin_to_image = {}
-
+    
     # Check which files need to be created
     need_to_load = []
     if not os.path.exists(asin_to_text_path):
@@ -572,57 +579,70 @@ def main():
     else:
         asin_to_text = json.load(open(asin_to_text_path, 'r', encoding='utf-8'))
         print(f"Loaded existing asin_to_text: {len(asin_to_text)} -> {asin_to_text_path}")
-
+    
     if not os.path.exists(asin_to_title_path):
         need_to_load.append('title')
     else:
         asin_to_title = json.load(open(asin_to_title_path, 'r', encoding='utf-8'))
         print(f"Loaded existing asin_to_title: {len(asin_to_title)} -> {asin_to_title_path}")
-
+    
+    if not os.path.exists(asin_to_description_path):
+        need_to_load.append('description')
+    else:
+        asin_to_description = json.load(open(asin_to_description_path, 'r', encoding='utf-8'))
+        print(f"Loaded existing asin_to_description: {len(asin_to_description)} -> {asin_to_description_path}")
+    
     if not os.path.exists(asin_to_image_path):
         need_to_load.append('image')
     else:
         asin_to_image = json.load(open(asin_to_image_path, 'r', encoding='utf-8'))
         print(f"Loaded existing asin_to_image: {len(asin_to_image)} -> {asin_to_image_path}")
-
+    
     # If any files are missing, load metadata and create them
     if need_to_load:
         print(f"Loading metadata to create missing files: {', '.join(need_to_load)}")
         st_time = time.time()
-        loaded_text, loaded_title, loaded_image = load_metadata(dataset_name)
-
+        loaded_text, loaded_title, loaded_description, loaded_image = load_metadata(dataset_name)
+        
+        # Save only missing files
         if 'text' in need_to_load:
             asin_to_text = {asin: text for asin, text in loaded_text.items() if asin in id2item.values()}
             with open(asin_to_text_path, 'w', encoding='utf-8') as f:
                 json.dump(asin_to_text, f, ensure_ascii=False, indent=2)
             print(f"Saved asin_to_text: {len(asin_to_text)} -> {asin_to_text_path}")
-
+        
         if 'title' in need_to_load:
             asin_to_title = {asin: title for asin, title in loaded_title.items() if asin in id2item.values()}
             with open(asin_to_title_path, 'w', encoding='utf-8') as f:
                 json.dump(asin_to_title, f, ensure_ascii=False, indent=2)
             print(f"Saved asin_to_title: {len(asin_to_title)} -> {asin_to_title_path}")
-
+        
+        if 'description' in need_to_load:
+            asin_to_description = {asin: description for asin, description in loaded_description.items() if asin in id2item.values()}
+            with open(asin_to_description_path, 'w', encoding='utf-8') as f:
+                json.dump(asin_to_description, f, ensure_ascii=False, indent=2)
+            print(f"Saved asin_to_description: {len(asin_to_description)} -> {asin_to_description_path}")
+        
         if 'image' in need_to_load:
             asin_to_image = {asin: url for asin, url in loaded_image.items() if asin in id2item.values()}
             with open(asin_to_image_path, 'w', encoding='utf-8') as f:
                 json.dump(asin_to_image, f, ensure_ascii=False, indent=2)
             print(f"Saved asin_to_image: {len(asin_to_image)} -> {asin_to_image_path}")
-
+        
         print(f"Load + Save time taken: {time.time() - st_time:.2f} seconds")
 
-    # visual attributes from image
-    image_attr_path = os.path.join(save_dir, f'{generative_model_saved_name}_image_attr.json')
+    # image attributes from image
+    image_attr_path = os.path.join(save_dir, f'{generative_model_saved_name}_image_attr_v2.json')
     if os.path.exists(image_attr_path):
-        print(f"Visual attr already exist: {image_attr_path}")
+        print(f"Image attr already exist: {image_attr_path}")
         asin_to_visual_attr = json.load(open(image_attr_path, 'r', encoding='utf-8'))
     else:
         asin_to_visual_attr = generate_visual_attributes_with_vlm(
-            asin_to_image, asin_to_title, generative_model, device
+            asin_to_image, asin_to_title, asin_to_description, generative_model, device
         )
         with open(image_attr_path, 'w', encoding='utf-8') as f:
             json.dump(asin_to_visual_attr, f, ensure_ascii=False, indent=2)
-        print(f"Saved Visual attr captions: {len(asin_to_visual_attr)} -> {image_attr_path}")
+        print(f"Saved Image attr captions: {len(asin_to_visual_attr)} -> {image_attr_path}")
 
     # Load embedding model
     print(f'Load {embedding_model} model')
@@ -636,16 +656,16 @@ def main():
     embedding_dir = os.path.join(save_dir, f'{embedding_model_saved_name}')
     os.makedirs(embedding_dir, exist_ok=True)
 
-    # Visual attribute embeddings
+    # Image attribute embeddings
     generate_and_save_embeddings(
         embedding_dir, model, asin_to_visual_attr, {}, {}, batch_size,
-        modality='text', desc='Visual attr', id2item=id2item, filename='visual_attr'
+        modality='text', desc='Image attr', id2item=id2item, filename='image_attr_v2'
     )
 
-    # Fused text + visual attribute embeddings
+    # Fused text + image attribute embeddings
     generate_and_save_embeddings(
         embedding_dir, model, asin_to_text, asin_to_visual_attr, {}, {}, batch_size,
-        modality='text_with_text', desc='Text+Visual attr', id2item=id2item, filename='text_with_visual_attr'
+        modality='text_with_text', desc='Text+Image attr', id2item=id2item, filename='text_with_image_attr_v2'
     )
 
 
