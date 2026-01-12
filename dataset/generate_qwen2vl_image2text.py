@@ -491,16 +491,15 @@ def main():
     os.makedirs(embedding_dir, exist_ok=True)
 
     # Image2text embeddings
-    image2text_emb_path = os.path.join(embedding_dir, f'{embedding_model_saved_name}_image2text.pkl')
     generate_and_save_embeddings(
         embedding_dir, model, asin_to_text, asin_to_image, asin_to_caption, batch_size,
-        modality='image2text', desc='Image2text', id2item=id2item, filename='image2text'
+        modality='text', desc='Image2text', id2item=id2item, filename='image2text'
     )
 
     # Fused image2text embeddings
     generate_and_save_embeddings(
         embedding_dir, model, asin_to_text, asin_to_image, asin_to_caption, batch_size,
-        modality='image2text_fused', desc='Fused image2text', id2item=id2item, filename='image2text_fused'
+        modality='text_with_text', desc='Text+Image2text', id2item=id2item, filename='text_with_image2text'
     )
 
 
