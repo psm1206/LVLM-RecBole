@@ -196,88 +196,40 @@ def generate_text_description_from_image_with_vlm(asin_to_image, asin_to_title, 
     vlm_model = Qwen2VLForConditionalGeneration.from_pretrained(
         vlm_model_name, torch_dtype="auto", device_map=device
     )
+    
     processor = AutoProcessor.from_pretrained(vlm_model_name)
 
     asins_with_image = [asin for asin, url in asin_to_image.items() if isinstance(url, str) and url.strip()]
-    for batch_asins in tqdm(list(batched(asins_with_image, batch_size)), desc='Image2text'):
-        urls = [asin_to_image[a] for a in batch_asins]
-        titles = [asin_to_title[a] for a in batch_asins]
-
-        messages = []
-        for url, title in zip(urls, titles):
-            messages.append({
+    
+    for asin in tqdm(asins_with_image, desc='Image2text'):
+        url = asin_to_image[asin]
+        title = asin_to_title[asin]
+        
+        try:
+            messages = [{
                 "role": "user",
                 "content": [
                     {"type": "image", "image": url},
                     {"type": "text", "text": PROMPT_TEMPLATE.format(title=title)},
                 ],
-            })
-
-        # batch processing
-        try:
-            texts = [
-                processor.apply_chat_template(msg, tokenize=False, add_generation_prompt=True)
-                for msg in messages
-            ]
-            image_inputs, video_inputs = process_vision_info(messages)
-            inputs = processor(
-                text=texts,
-                images=image_inputs,
-                videos=video_inputs,
-                padding=True,
-                return_tensors="pt",
-            )            
+            }]
+            text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+            img_inp, vid_inp = process_vision_info(messages)
+            inputs = processor(text=text, images=img_inp, videos=vid_inp, return_tensors="pt")
             inputs = inputs.to(device)
-                        
             with torch.inference_mode():
-                generated_ids = vlm_model.generate(**inputs, max_new_tokens=128)
-            
-            # Remove prompt tokens and decode
-            generated_ids_trimmed = [
-                out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
-            ]
-            captions = processor.batch_decode(
-                generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
-            )
-            
-            for a, c, t, u in zip(batch_asins, captions, titles, urls):
-                asin_to_caption[a] = {
-                    'caption': c,
-                    'title': t,
-                    'image_url': u,
-                }
-
-        # individual processing
-        except Exception:
-            print(f"Error processing batch: Fallback to individual processing")
-            for a in batch_asins:
-                url = asin_to_image[a]
-                title = asin_to_title[a]
-                try:
-                    messages = [{
-                        "role": "user",
-                        "content": [
-                            {"type": "image", "image": url},
-                            {"type": "text", "text": PROMPT_TEMPLATE.format(title=title)},
-                        ],
-                    }]
-                    text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-                    img_inp, vid_inp = process_vision_info(messages)
-                    inputs = processor(text=text, images=img_inp, videos=vid_inp, return_tensors="pt")
-                    inputs = inputs.to(device)
-                    with torch.inference_mode():
-                        out_ids = vlm_model.generate(**inputs, max_new_tokens=128)
-                    out_ids_trimmed = out_ids[0][len(inputs.input_ids[0]):]
-                    caption = processor.decode(out_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False)
-                    asin_to_caption[a] = {
-                        'caption': caption,
-                        'title': title,
-                        'image_url': url,
-                    }
-                except Exception:
-                    error_count += 1
-                    print(f"Error generating caption/embedding for {a}")
-                    continue
+                out_ids = vlm_model.generate(**inputs, max_new_tokens=128)
+            out_ids_trimmed = out_ids[0][len(inputs.input_ids[0]):]
+            caption = processor.decode(out_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False)
+            asin_to_caption[asin] = {
+                'caption': caption,
+                'title': title,
+                'image_url': url,
+            }
+        except Exception as individual_error:
+            error_count += 1
+            print(f"Error generating caption for {asin}: {str(individual_error)}")
+            continue
 
         # memory management (stability for large batches)
         gc.collect()
@@ -291,14 +243,14 @@ def generate_text_description_from_image_with_vlm(asin_to_image, asin_to_title, 
     return asin_to_caption
 
 
-def generate_embeddings_with_gme(model, asin_to_text, asin_to_image, asin_to_caption, batch_size, modality):
+def generate_embeddings_with_gme(model, asin_to_text1, asin_to_text2, asin_to_image, batch_size, modality, desc):
     embeds = {}
     error_count = 0
 
     if modality == 'text':
-        asins_with_text = [asin for asin, txt in asin_to_text.items() if isinstance(txt, str) and txt.strip()]
-        for batch_asins in tqdm(list(batched(asins_with_text, batch_size)), desc='Text embeddings'):
-            texts = [asin_to_text[a] for a in batch_asins]
+        asins_with_text = [asin for asin, txt in asin_to_text1.items() if isinstance(txt, str) and txt.strip()]
+        for batch_asins in tqdm(list(batched(asins_with_text, batch_size)), desc=f'{desc} Text embeddings'):
+            texts = [asin_to_text1[a] for a in batch_asins]
             with torch.inference_mode():
                 emb = model.get_text_embeddings(texts=texts)
             emb_np = emb.detach().cpu().numpy()
@@ -307,7 +259,7 @@ def generate_embeddings_with_gme(model, asin_to_text, asin_to_image, asin_to_cap
 
     elif modality == 'image':
         asins_with_image = [asin for asin, url in asin_to_image.items() if isinstance(url, str) and url.strip()]
-        for batch_asins in tqdm(list(batched(asins_with_image, batch_size)), desc='Image embeddings'):
+        for batch_asins in tqdm(list(batched(asins_with_image, batch_size)), desc=f'{desc} Image embeddings'):
             urls = [asin_to_image[a] for a in batch_asins]
             try:
                 with torch.inference_mode():
@@ -327,21 +279,24 @@ def generate_embeddings_with_gme(model, asin_to_text, asin_to_image, asin_to_cap
                         print(f"Error getting image embeddings for {a}")
                         continue
 
-    elif modality == 'image2text':
-        asins_with_image2text = [asin for asin, caption in asin_to_caption.items() if isinstance(caption, str) and caption.strip()]
-        for batch_asins in tqdm(list(batched(asins_with_image2text, batch_size)), desc='Image2text embeddings'):
-            captions = [asin_to_caption[a] for a in batch_asins]
+    elif modality == 'text_with_text':
+        asins_with_text1 = [asin for asin, txt in asin_to_text1.items() if isinstance(txt, str) and txt.strip()]
+        asins_with_text2 = [asin for asin, txt in asin_to_text2.items() if isinstance(txt, str) and txt.strip()]
+        asins_with_both = [a for a in asins_with_text2 if a in asins_with_text1]
+        for batch_asins in tqdm(list(batched(asins_with_both, batch_size)), desc=f'{desc} Text+Text embeddings'):
+            # concatenate text and text
+            texts = [asin_to_text1[a] + ' ' + asin_to_text2[a] for a in batch_asins]
             with torch.inference_mode():
-                emb = model.get_text_embeddings(texts=captions)
+                emb = model.get_text_embeddings(texts=texts)
             emb_np = emb.detach().cpu().numpy()
             for a, e in zip(batch_asins, emb_np):
-                embeds[a] = e
+                embeds[a] = e                
 
-    elif modality == 'fused':
-        asins_with_text = [asin for asin, txt in asin_to_text.items() if isinstance(txt, str) and txt.strip()]
+    elif modality == 'text_with_image':
+        asins_with_text = [asin for asin, txt in asin_to_text1.items() if isinstance(txt, str) and txt.strip()]
         asins_with_both = [a for a in asins_with_text if a in asin_to_image]
-        for batch_asins in tqdm(list(batched(asins_with_both, batch_size)), desc='Fused (Text + Image) embeddings'):
-            texts = [asin_to_text[a] for a in batch_asins]
+        for batch_asins in tqdm(list(batched(asins_with_both, batch_size)), desc=f'{desc} Text+Image embeddings'):
+            texts = [asin_to_text1[a] for a in batch_asins]
             urls = [asin_to_image[a] for a in batch_asins]
             try:
                 with torch.inference_mode():
@@ -354,25 +309,12 @@ def generate_embeddings_with_gme(model, asin_to_text, asin_to_image, asin_to_cap
                 for a in batch_asins:
                     try:
                         with torch.inference_mode():
-                            emb = model.get_fused_embeddings(texts=[asin_to_text[a]], images=[asin_to_image[a]])
+                            emb = model.get_fused_embeddings(texts=[asin_to_text1[a]], images=[asin_to_image[a]])
                         embeds[a] = emb.detach().cpu().numpy()[0]
                     except Exception:
                         error_count += 1
                         print(f"Error getting fused embeddings for {a}")
                         continue
-
-    elif modality == 'image2text_fused':
-        asins_with_text = [asin for asin, txt in asin_to_text.items() if isinstance(txt, str) and txt.strip()]
-        asins_with_image2text = [asin for asin, caption in asin_to_caption.items() if isinstance(caption, str) and caption.strip()]
-        asins_with_both = [a for a in asins_with_image2text if a in asins_with_text]
-        for batch_asins in tqdm(list(batched(asins_with_both, batch_size)), desc='Fused (Text + Image2text) embeddings'):
-            # concatenate text and caption
-            texts = [asin_to_text[a] + ' image description is ' + asin_to_caption[a] for a in batch_asins]
-            with torch.inference_mode():
-                emb = model.get_text_embeddings(texts=texts)
-                emb_np = emb.detach().cpu().numpy()
-                for a, e in zip(batch_asins, emb_np):
-                    embeds[a] = e 
 
     else:
         raise ValueError(f"Invalid modality: {modality}")
@@ -381,6 +323,47 @@ def generate_embeddings_with_gme(model, asin_to_text, asin_to_image, asin_to_cap
     print(f"{modality} embeddings error rate: {error_count / len(embeds) * 100:.2f}%")
 
     return embeds
+
+
+def generate_and_save_embeddings(
+    embedding_dir: str,
+    model,
+    asin_to_text1: Dict,
+    asin_to_text2: Dict,
+    asin_to_image: Dict,
+    batch_size: int,
+    modality: str,
+    desc: str,
+    id2item: Dict[str, str],
+    filename: str
+):
+    """
+    Generate embeddings and save them if they don't already exist.
+    
+    Args:
+        embedding_dir: Directory to save embeddings
+        model: Embedding model
+        asin_to_text1: First text dictionary
+        asin_to_text2: Second text dictionary (for text_with_text modality)
+        asin_to_image: Image dictionary (for image/text_with_image modalities)
+        batch_size: Batch size for embedding generation
+        modality: Modality type ('text', 'text_with_text', 'image', 'text_with_image')
+        desc: Description for progress bar
+        id2item: Mapping from item ID to ASIN
+        filename: Filename to save embeddings (without extension)
+    """
+    emb_path = os.path.join(embedding_dir, f'{filename}.pkl')
+    if os.path.exists(emb_path):
+        print(f"{desc} embeddings already exist: {emb_path}")
+    else:
+        embeds = generate_embeddings_with_gme(
+            model, asin_to_text1, asin_to_text2, asin_to_image, batch_size, modality, desc
+        )
+        emb_dim = pick_dim(embeds)
+        emb_arr = to_ordered_array(embeds, id2item, emb_dim)
+        with open(emb_path, 'wb') as f:
+            pickle.dump(emb_arr, f)
+        print(f"Saved {desc} embeddings: {emb_arr.shape} -> {emb_path}")
 
 
 def to_ordered_array(embeds, id2item, fill_dim: int) -> np.ndarray:
@@ -421,37 +404,61 @@ def main():
 
     save_dir = dataset_name
     os.makedirs(save_dir, exist_ok=True)
+    id2item = load_id2item(dataset_name)
 
-    # Check if asin_to_text, asin_to_title, asin_to_image already exist
+    # Check and load/create each asin_to file individually
     asin_to_text_path = os.path.join(save_dir, 'asin_to_text.json')
     asin_to_title_path = os.path.join(save_dir, 'asin_to_title.json')
     asin_to_image_path = os.path.join(save_dir, 'asin_to_image.json')
-    if os.path.exists(asin_to_text_path) and os.path.exists(asin_to_title_path) and os.path.exists(asin_to_image_path):
-        asin_to_text = json.load(open(asin_to_text_path, 'r', encoding='utf-8'))
-        asin_to_title = json.load(open(asin_to_title_path, 'r', encoding='utf-8'))
-        asin_to_image = json.load(open(asin_to_image_path, 'r', encoding='utf-8'))
-        print(f"Loaded existed asin_to_text, asin_to_title, and asin_to_image")
-    else:
-        print(f"Saving asin_to_text, asin_to_title, and asin_to_image")
-        st_time = time.time()
-        asin_to_text, asin_to_title, asin_to_image = load_metadata(dataset_name)
-        
-        # Filter asin_to_text, asin_to_title, and asin_to_image with id2item
-        id2item = load_id2item(dataset_name)
-        asin_to_text = {asin: text for asin, text in asin_to_text.items() if asin in id2item.values()}
-        asin_to_title = {asin: title for asin, title in asin_to_title.items() if asin in id2item.values()}
-        asin_to_image = {asin: url for asin, url in asin_to_image.items() if asin in id2item.values()}
 
-        # Save asin_to_text, asin_to_title, and asin_to_image
-        with open(asin_to_text_path, 'w', encoding='utf-8') as f:
-            json.dump(asin_to_text, f, ensure_ascii=False, indent=2)
-        print(f"Saved asin_to_text: {len(asin_to_text)} -> {asin_to_text_path}")
-        with open(asin_to_title_path, 'w', encoding='utf-8') as f:
-            json.dump(asin_to_title, f, ensure_ascii=False, indent=2)
-        print(f"Saved asin_to_title: {len(asin_to_title)} -> {asin_to_title_path}")
-        with open(asin_to_image_path, 'w', encoding='utf-8') as f:
-            json.dump(asin_to_image, f, ensure_ascii=False, indent=2)
-        print(f"Saved asin_to_image: {len(asin_to_image)} -> {asin_to_image_path}")
+    # Initialize dictionaries
+    asin_to_text = {}
+    asin_to_title = {}
+    asin_to_image = {}
+
+    # Check which files need to be created
+    need_to_load = []
+    if not os.path.exists(asin_to_text_path):
+        need_to_load.append('text')
+    else:
+        asin_to_text = json.load(open(asin_to_text_path, 'r', encoding='utf-8'))
+        print(f"Loaded existing asin_to_text: {len(asin_to_text)} -> {asin_to_text_path}")
+
+    if not os.path.exists(asin_to_title_path):
+        need_to_load.append('title')
+    else:
+        asin_to_title = json.load(open(asin_to_title_path, 'r', encoding='utf-8'))
+        print(f"Loaded existing asin_to_title: {len(asin_to_title)} -> {asin_to_title_path}")
+
+    if not os.path.exists(asin_to_image_path):
+        need_to_load.append('image')
+    else:
+        asin_to_image = json.load(open(asin_to_image_path, 'r', encoding='utf-8'))
+        print(f"Loaded existing asin_to_image: {len(asin_to_image)} -> {asin_to_image_path}")
+
+    # If any files are missing, load metadata and create them
+    if need_to_load:
+        print(f"Loading metadata to create missing files: {', '.join(need_to_load)}")
+        st_time = time.time()
+        loaded_text, loaded_title, loaded_image = load_metadata(dataset_name)
+
+        if 'text' in need_to_load:
+            asin_to_text = {asin: text for asin, text in loaded_text.items() if asin in id2item.values()}
+            with open(asin_to_text_path, 'w', encoding='utf-8') as f:
+                json.dump(asin_to_text, f, ensure_ascii=False, indent=2)
+            print(f"Saved asin_to_text: {len(asin_to_text)} -> {asin_to_text_path}")
+
+        if 'title' in need_to_load:
+            asin_to_title = {asin: title for asin, title in loaded_title.items() if asin in id2item.values()}
+            with open(asin_to_title_path, 'w', encoding='utf-8') as f:
+                json.dump(asin_to_title, f, ensure_ascii=False, indent=2)
+            print(f"Saved asin_to_title: {len(asin_to_title)} -> {asin_to_title_path}")
+
+        if 'image' in need_to_load:
+            asin_to_image = {asin: url for asin, url in loaded_image.items() if asin in id2item.values()}
+            with open(asin_to_image_path, 'w', encoding='utf-8') as f:
+                json.dump(asin_to_image, f, ensure_ascii=False, indent=2)
+            print(f"Saved asin_to_image: {len(asin_to_image)} -> {asin_to_image_path}")
 
         print(f"Load + Save time taken: {time.time() - st_time:.2f} seconds")
 
@@ -480,36 +487,21 @@ def main():
     # Extract caption from asin_to_caption
     asin_to_caption = {asin: item_metadata['caption'] for asin, item_metadata in asin_to_caption.items()}
 
-    embedding_dir = os.path.join(save_dir, f'{generative_model_saved_name}')
+    embedding_dir = os.path.join(save_dir, f'{embedding_model_saved_name}')
     os.makedirs(embedding_dir, exist_ok=True)
 
     # Image2text embeddings
     image2text_emb_path = os.path.join(embedding_dir, f'{embedding_model_saved_name}_image2text.pkl')
-    if os.path.exists(image2text_emb_path):
-        print(f"Image2text embeddings already exist: {image2text_emb_path}")
-    else:
-        image2text_embeds = generate_embeddings_with_gme(
-            model, asin_to_text, asin_to_image, asin_to_caption, batch_size, modality='image2text'
-        )
-        image2text_dim = pick_dim(image2text_embeds)
-        image2text_arr = to_ordered_array(image2text_embeds, id2item, image2text_dim)
-        with open(image2text_emb_path, 'wb') as f:
-            pickle.dump(image2text_arr, f)
-        print(f"Saved image2text embeddings: {image2text_arr.shape} -> {image2text_emb_path}")
+    generate_and_save_embeddings(
+        embedding_dir, model, asin_to_text, asin_to_image, asin_to_caption, batch_size,
+        modality='image2text', desc='Image2text', id2item=id2item, filename='image2text'
+    )
 
     # Fused image2text embeddings
-    fused_image2text_emb_path = os.path.join(embedding_dir, f'{embedding_model_saved_name}_fused_image2text.pkl')
-    if os.path.exists(fused_image2text_emb_path):
-        print(f"Fused image2text embeddings already exist: {fused_image2text_emb_path}")
-    else:
-        fused_image2text_embeds = generate_embeddings_with_gme(
-            model, asin_to_text, asin_to_image, asin_to_caption, batch_size, modality='image2text_fused'
-        )
-        fused_image2text_dim = pick_dim(fused_image2text_embeds)
-        fused_image2text_arr = to_ordered_array(fused_image2text_embeds, id2item, fused_image2text_dim)
-        with open(fused_image2text_emb_path, 'wb') as f:
-            pickle.dump(fused_image2text_arr, f)
-        print(f"Saved fused image2text embeddings: {fused_image2text_arr.shape} -> {fused_image2text_emb_path}")
+    generate_and_save_embeddings(
+        embedding_dir, model, asin_to_text, asin_to_image, asin_to_caption, batch_size,
+        modality='image2text_fused', desc='Fused image2text', id2item=id2item, filename='image2text_fused'
+    )
 
 
 if __name__ == '__main__':

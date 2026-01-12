@@ -174,14 +174,14 @@ def batched(iterable: List, batch_size: int) -> List[List]:
         yield iterable[i:i + batch_size]
 
 
-def generate_embeddings_with_gme(model, asin_to_text, asin_to_image, batch_size=8, modality='text'):
+def generate_embeddings_with_gme(model, asin_to_text1, asin_to_text2, asin_to_image, batch_size, modality, desc):
     embeds = {}
     error_count = 0
 
     if modality == 'text':
-        asins_with_text = [asin for asin, txt in asin_to_text.items() if isinstance(txt, str) and txt.strip()]
-        for batch_asins in tqdm(list(batched(asins_with_text, batch_size)), desc='Text embeddings'):
-            texts = [asin_to_text[a] for a in batch_asins]
+        asins_with_text = [asin for asin, txt in asin_to_text1.items() if isinstance(txt, str) and txt.strip()]
+        for batch_asins in tqdm(list(batched(asins_with_text, batch_size)), desc=f'{desc} Text embeddings'):
+            texts = [asin_to_text1[a] for a in batch_asins]
             with torch.inference_mode():
                 emb = model.get_text_embeddings(texts=texts)
             emb_np = emb.detach().cpu().numpy()
@@ -190,7 +190,7 @@ def generate_embeddings_with_gme(model, asin_to_text, asin_to_image, batch_size=
 
     elif modality == 'image':
         asins_with_image = [asin for asin, url in asin_to_image.items() if isinstance(url, str) and url.strip()]
-        for batch_asins in tqdm(list(batched(asins_with_image, batch_size)), desc='Image embeddings'):
+        for batch_asins in tqdm(list(batched(asins_with_image, batch_size)), desc=f'{desc} Image embeddings'):
             urls = [asin_to_image[a] for a in batch_asins]
             try:
                 with torch.inference_mode():
@@ -210,11 +210,24 @@ def generate_embeddings_with_gme(model, asin_to_text, asin_to_image, batch_size=
                         print(f"Error getting image embeddings for {a}")
                         continue
 
-    elif modality == 'fused':
-        asins_with_text = [asin for asin, txt in asin_to_text.items() if isinstance(txt, str) and txt.strip()]
+    elif modality == 'text_with_text':
+        asins_with_text1 = [asin for asin, txt in asin_to_text1.items() if isinstance(txt, str) and txt.strip()]
+        asins_with_text2 = [asin for asin, txt in asin_to_text2.items() if isinstance(txt, str) and txt.strip()]
+        asins_with_both = [a for a in asins_with_text2 if a in asins_with_text1]
+        for batch_asins in tqdm(list(batched(asins_with_both, batch_size)), desc=f'{desc} Text+Text embeddings'):
+            # concatenate text and text
+            texts = [asin_to_text1[a] + ' ' + asin_to_text2[a] for a in batch_asins]
+            with torch.inference_mode():
+                emb = model.get_text_embeddings(texts=texts)
+            emb_np = emb.detach().cpu().numpy()
+            for a, e in zip(batch_asins, emb_np):
+                embeds[a] = e                
+
+    elif modality == 'text_with_image':
+        asins_with_text = [asin for asin, txt in asin_to_text1.items() if isinstance(txt, str) and txt.strip()]
         asins_with_both = [a for a in asins_with_text if a in asin_to_image]
-        for batch_asins in tqdm(list(batched(asins_with_both, batch_size)), desc='Fused embeddings'):
-            texts = [asin_to_text[a] for a in batch_asins]
+        for batch_asins in tqdm(list(batched(asins_with_both, batch_size)), desc=f'{desc} Text+Image embeddings'):
+            texts = [asin_to_text1[a] for a in batch_asins]
             urls = [asin_to_image[a] for a in batch_asins]
             try:
                 with torch.inference_mode():
@@ -227,12 +240,13 @@ def generate_embeddings_with_gme(model, asin_to_text, asin_to_image, batch_size=
                 for a in batch_asins:
                     try:
                         with torch.inference_mode():
-                            emb = model.get_fused_embeddings(texts=[asin_to_text[a]], images=[asin_to_image[a]])
+                            emb = model.get_fused_embeddings(texts=[asin_to_text1[a]], images=[asin_to_image[a]])
                         embeds[a] = emb.detach().cpu().numpy()[0]
                     except Exception:
                         error_count += 1
                         print(f"Error getting fused embeddings for {a}")
                         continue
+
     else:
         raise ValueError(f"Invalid modality: {modality}")
     
@@ -253,6 +267,42 @@ def to_ordered_array(embeds, id2item, fill_dim: int) -> np.ndarray:
     return arr
 
 
+def pick_dim(d) -> int:
+    for v in d.values():
+        return int(v.shape[-1])
+    return 0
+
+
+def generate_and_save_embeddings(
+    embedding_dir: str,
+    model,
+    asin_to_text: Dict,
+    asin_to_image: Dict,
+    batch_size: int,
+    modality: str,
+    desc: str,
+    id2item: Dict[str, str],
+    filename: str
+):
+    emb_path = os.path.join(embedding_dir, f'{filename}.pkl')
+    if os.path.exists(emb_path):
+        print(f"{desc} embeddings already exist: {emb_path}")
+        return
+
+    embeds = generate_embeddings_with_gme(
+        model, asin_to_text, asin_to_image, batch_size=batch_size, modality=modality
+    )
+    emb_dim = pick_dim(embeds)
+    if emb_dim == 0:
+        print(f"No {desc.lower()} embeddings produced.")
+        return
+
+    emb_arr = to_ordered_array(embeds, id2item, emb_dim)
+    with open(emb_path, 'wb') as f:
+        pickle.dump(emb_arr, f)
+    print(f"Saved {desc} embeddings: {emb_arr.shape} -> {emb_path}")
+
+
 def main():
     seed_everything(42)
     args = parse_args()
@@ -266,12 +316,45 @@ def main():
 
     embedding_model_saved_name = short_name_dict[embedding_model]
 
-    asin_to_text, asin_to_image = load_metadata(dataset_name)
     id2item = load_id2item(dataset_name)
 
-    # filtering asin_to_text and asin_to_image with id2item
-    asin_to_text = {asin: text for asin, text in asin_to_text.items() if asin in id2item.values()}
-    asin_to_image = {asin: url for asin, url in asin_to_image.items() if asin in id2item.values()}
+    # 개별 파일 존재 여부 확인 후 로드/생성
+    save_dir = dataset_name
+    os.makedirs(save_dir, exist_ok=True)
+    asin_to_text_path = os.path.join(save_dir, 'asin_to_text.json')
+    asin_to_image_path = os.path.join(save_dir, 'asin_to_image.json')
+
+    asin_to_text: Dict[str, str] = {}
+    asin_to_image: Dict[str, str] = {}
+    need_to_load: List[str] = []
+
+    if os.path.exists(asin_to_text_path):
+        asin_to_text = json.load(open(asin_to_text_path, 'r', encoding='utf-8'))
+        print(f"Loaded existing asin_to_text: {len(asin_to_text)} -> {asin_to_text_path}")
+    else:
+        need_to_load.append('text')
+
+    if os.path.exists(asin_to_image_path):
+        asin_to_image = json.load(open(asin_to_image_path, 'r', encoding='utf-8'))
+        print(f"Loaded existing asin_to_image: {len(asin_to_image)} -> {asin_to_image_path}")
+    else:
+        need_to_load.append('image')
+
+    if need_to_load:
+        print(f"Loading metadata to create missing files: {', '.join(need_to_load)}")
+        loaded_text, loaded_image = load_metadata(dataset_name)
+
+        if 'text' in need_to_load:
+            asin_to_text = {asin: text for asin, text in loaded_text.items() if asin in id2item.values()}
+            with open(asin_to_text_path, 'w', encoding='utf-8') as f:
+                json.dump(asin_to_text, f, ensure_ascii=False, indent=2)
+            print(f"Saved asin_to_text: {len(asin_to_text)} -> {asin_to_text_path}")
+
+        if 'image' in need_to_load:
+            asin_to_image = {asin: url for asin, url in loaded_image.items() if asin in id2item.values()}
+            with open(asin_to_image_path, 'w', encoding='utf-8') as f:
+                json.dump(asin_to_image, f, ensure_ascii=False, indent=2)
+            print(f"Saved asin_to_image: {len(asin_to_image)} -> {asin_to_image_path}")
 
     print(f'Load {embedding_model} model')
     device = f'cuda:{gpu_id}' if torch.cuda.is_available() else 'cpu'
@@ -282,87 +365,27 @@ def main():
     )
     model = model.to(device)
 
-    # Determine dims using any available vector per modality
-    def pick_dim(d) -> int:
-        for v in d.values():
-            return int(v.shape[-1])
-        return 0
-
-    save_dir = dataset_name
-    os.makedirs(save_dir, exist_ok=True)
+    # 저장 디렉터리 생성
+    embedding_dir = os.path.join(save_dir, f'{embedding_model_saved_name}')
+    os.makedirs(embedding_dir, exist_ok=True)
 
     # text embeddings
-    text_emb_path = os.path.join(save_dir, f'{embedding_model_saved_name}_text.pkl')
-    if os.path.exists(text_emb_path):
-        print(f"Text embeddings already exist: {text_emb_path}")
-    else:
-        text_embeds = generate_embeddings_with_gme(
-            model, asin_to_text, asin_to_image, batch_size=batch_size, modality='text'
-        )
-        text_dim = pick_dim(text_embeds)
-
-        if text_dim > 0:
-            text_arr = to_ordered_array(text_embeds, id2item, text_dim)
-            with open(text_emb_path, 'wb') as f:
-                pickle.dump(text_arr, f)
-            print(f"Saved text embeddings: {text_arr.shape} -> {text_emb_path}")
-        else:
-            print('No text embeddings produced.')
+    generate_and_save_embeddings(
+        embedding_dir, model, asin_to_text, asin_to_image, batch_size,
+        modality='text', desc='Text', id2item=id2item, filename=f'{embedding_model_saved_name}_text'
+    )
 
     # image embeddings
-    image_emb_path = os.path.join(save_dir, f'{embedding_model_saved_name}_image.pkl')
-    if os.path.exists(image_emb_path):
-        print(f"Image embeddings already exist: {image_emb_path}")
-    else:
-        image_embeds = generate_embeddings_with_gme(
-            model, asin_to_text, asin_to_image, batch_size=batch_size, modality='image'
-        )
-        image_dim = pick_dim(image_embeds)
-
-        if image_dim > 0:
-            image_arr = to_ordered_array(image_embeds, id2item, image_dim)
-            with open(image_emb_path, 'wb') as f:
-                pickle.dump(image_arr, f)
-            print(f"Saved image embeddings: {image_arr.shape} -> {image_emb_path}")
-        else:
-            print('No image embeddings produced.')
-
-    # plot similarity between text and image embeddings
-    from sklearn.metrics.pairwise import cosine_similarity
-    import matplotlib.pyplot as plt
-
-    # text_arr.shape: (item_num, dim)
-    # image_arr.shape: (item_num, dim)
-    text_arr = pickle.load(open(text_emb_path, 'rb'))
-    image_arr = pickle.load(open(image_emb_path, 'rb'))
-    similarity = cosine_similarity(text_arr, image_arr)
-    plt.figure(figsize=(10, 10))
-    plt.imshow(similarity, cmap='viridis')
-    plt.colorbar()
-    plt.savefig(os.path.join(save_dir, f'text_image_similarity_{dataset_name}_{embedding_model_saved_name}.png'))
-    plt.close()
-
-    del text_arr, image_arr, similarity
-    gc.collect()
-    torch.cuda.empty_cache()
+    generate_and_save_embeddings(
+        embedding_dir, model, asin_to_text, asin_to_image, batch_size,
+        modality='image', desc='Image', id2item=id2item, filename=f'{embedding_model_saved_name}_image'
+    )
 
     # fused embeddings
-    fused_emb_path = os.path.join(save_dir, f'{embedding_model_saved_name}_fused.pkl')
-    if os.path.exists(fused_emb_path):
-        print(f"Fused embeddings already exist: {fused_emb_path}")
-    else:
-        fused_embeds = generate_embeddings_with_gme(
-            model, asin_to_text, asin_to_image, batch_size=batch_size, modality='fused'
-        )
-        fused_dim = pick_dim(fused_embeds)
-
-        if fused_dim > 0:
-            fused_arr = to_ordered_array(fused_embeds, id2item, fused_dim)
-            with open(fused_emb_path, 'wb') as f:
-                pickle.dump(fused_arr, f)
-            print(f"Saved fused embeddings: {fused_arr.shape} -> {fused_emb_path}")
-        else:
-            print('No fused embeddings produced.')
+    generate_and_save_embeddings(
+        embedding_dir, model, asin_to_text, asin_to_image, batch_size,
+        modality='text_with_image', desc='Fused', id2item=id2item, filename=f'{embedding_model_saved_name}_fused'
+    )
 
 
 if __name__ == '__main__':

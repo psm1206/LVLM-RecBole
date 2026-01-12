@@ -330,7 +330,7 @@ def generate_visual_attributes_with_vlm(asin_to_image, asin_to_title, vlm_model_
     return asin_to_visual_attr    
 
 
-def generate_embeddings_with_gme(model, asin_to_text, asin_to_image, asin_to_caption, asin_to_visual_attr, batch_size, modality):
+def generate_embeddings_with_gme(model, asin_to_text, asin_to_image, asin_to_caption, asin_to_visual_attr, batch_size, modality, desc):
     embeds = {}
     error_count = 0
 
@@ -439,8 +439,9 @@ def generate_embeddings_with_gme(model, asin_to_text, asin_to_image, asin_to_cap
     else:
         raise ValueError(f"Invalid modality: {modality}")
     
-    print(f"{modality} embeddings error count: {error_count}")
-    print(f"{modality} embeddings error rate: {error_count / len(embeds) * 100:.2f}%")
+    total_items = max(1, len(embeds) + error_count)
+    print(f"{desc} ({modality}) embeddings error count: {error_count}")
+    print(f"{desc} ({modality}) embeddings error rate: {error_count / total_items * 100:.2f}%")
 
     return embeds
 
@@ -461,6 +462,75 @@ def pick_dim(d) -> int:
     for v in d.values():
         return int(v.shape[-1])
     return 0
+
+
+def generate_and_save_embeddings(
+    embedding_dir: str,
+    model,
+    asin_to_text: Dict,
+    asin_to_image: Dict,
+    asin_to_caption: Dict,
+    asin_to_visual_attr: Dict,
+    batch_size: int,
+    modality: str,
+    desc: str,
+    id2item: Dict[str, str],
+    filename: str
+):
+    emb_path = os.path.join(embedding_dir, f'{filename}.pkl')
+    if os.path.exists(emb_path):
+        print(f"{desc} embeddings already exist: {emb_path}")
+        return
+
+    embeds = generate_embeddings_with_gme(
+        model, asin_to_text, asin_to_image, asin_to_caption, asin_to_visual_attr, batch_size, modality=modality, desc=desc
+    )
+    emb_dim = pick_dim(embeds)
+    emb_arr = to_ordered_array(embeds, id2item, emb_dim)
+    with open(emb_path, 'wb') as f:
+        pickle.dump(emb_arr, f)
+    print(f"Saved {desc} embeddings: {emb_arr.shape} -> {emb_path}")
+
+
+def generate_and_save_embeddings(
+    embedding_dir: str,
+    model,
+    asin_to_text1: Dict,
+    asin_to_text2: Dict,
+    asin_to_image: Dict,
+    batch_size: int,
+    modality: str,
+    desc: str,
+    id2item: Dict[str, str],
+    filename: str
+):
+    """
+    Generate embeddings and save them if they don't already exist.
+    
+    Args:
+        embedding_dir: Directory to save embeddings
+        model: Embedding model
+        asin_to_text1: First text dictionary
+        asin_to_text2: Second text dictionary (for text_with_text modality)
+        asin_to_image: Image dictionary (for image/text_with_image modalities)
+        batch_size: Batch size for embedding generation
+        modality: Modality type ('text', 'text_with_text', 'image', 'text_with_image')
+        desc: Description for progress bar
+        id2item: Mapping from item ID to ASIN
+        filename: Filename to save embeddings (without extension)
+    """
+    emb_path = os.path.join(embedding_dir, f'{filename}.pkl')
+    if os.path.exists(emb_path):
+        print(f"{desc} embeddings already exist: {emb_path}")
+    else:
+        embeds = generate_embeddings_with_gme(
+            model, asin_to_text1, asin_to_text2, asin_to_image, batch_size, modality, desc
+        )
+        emb_dim = pick_dim(embeds)
+        emb_arr = to_ordered_array(embeds, id2item, emb_dim)
+        with open(emb_path, 'wb') as f:
+            pickle.dump(emb_arr, f)
+        print(f"Saved {desc} embeddings: {emb_arr.shape} -> {emb_path}")    
 
 
 def main():
@@ -485,35 +555,59 @@ def main():
     os.makedirs(save_dir, exist_ok=True)
     id2item = load_id2item(dataset_name)
 
-    # Check if asin_to_text, asin_to_title, asin_to_image already exist
+    # Check and load/create each asin_to file individually
     asin_to_text_path = os.path.join(save_dir, 'asin_to_text.json')
     asin_to_title_path = os.path.join(save_dir, 'asin_to_title.json')
     asin_to_image_path = os.path.join(save_dir, 'asin_to_image.json')
-    if os.path.exists(asin_to_text_path) and os.path.exists(asin_to_title_path) and os.path.exists(asin_to_image_path):
-        asin_to_text = json.load(open(asin_to_text_path, 'r', encoding='utf-8'))
-        asin_to_title = json.load(open(asin_to_title_path, 'r', encoding='utf-8'))
-        asin_to_image = json.load(open(asin_to_image_path, 'r', encoding='utf-8'))
-        print(f"Loaded existed asin_to_text, asin_to_title, and asin_to_image")
-    else:
-        print(f"Saving asin_to_text, asin_to_title, and asin_to_image")
-        st_time = time.time()
-        asin_to_text, asin_to_title, asin_to_image = load_metadata(dataset_name)
-        
-        # Filter asin_to_text, asin_to_title, and asin_to_image with id2item
-        asin_to_text = {asin: text for asin, text in asin_to_text.items() if asin in id2item.values()}
-        asin_to_title = {asin: title for asin, title in asin_to_title.items() if asin in id2item.values()}
-        asin_to_image = {asin: url for asin, url in asin_to_image.items() if asin in id2item.values()}
 
-        # Save asin_to_text, asin_to_title, and asin_to_image
-        with open(asin_to_text_path, 'w', encoding='utf-8') as f:
-            json.dump(asin_to_text, f, ensure_ascii=False, indent=2)
-        print(f"Saved asin_to_text: {len(asin_to_text)} -> {asin_to_text_path}")
-        with open(asin_to_title_path, 'w', encoding='utf-8') as f:
-            json.dump(asin_to_title, f, ensure_ascii=False, indent=2)
-        print(f"Saved asin_to_title: {len(asin_to_title)} -> {asin_to_title_path}")
-        with open(asin_to_image_path, 'w', encoding='utf-8') as f:
-            json.dump(asin_to_image, f, ensure_ascii=False, indent=2)
-        print(f"Saved asin_to_image: {len(asin_to_image)} -> {asin_to_image_path}")
+    # Initialize dictionaries
+    asin_to_text = {}
+    asin_to_title = {}
+    asin_to_image = {}
+
+    # Check which files need to be created
+    need_to_load = []
+    if not os.path.exists(asin_to_text_path):
+        need_to_load.append('text')
+    else:
+        asin_to_text = json.load(open(asin_to_text_path, 'r', encoding='utf-8'))
+        print(f"Loaded existing asin_to_text: {len(asin_to_text)} -> {asin_to_text_path}")
+
+    if not os.path.exists(asin_to_title_path):
+        need_to_load.append('title')
+    else:
+        asin_to_title = json.load(open(asin_to_title_path, 'r', encoding='utf-8'))
+        print(f"Loaded existing asin_to_title: {len(asin_to_title)} -> {asin_to_title_path}")
+
+    if not os.path.exists(asin_to_image_path):
+        need_to_load.append('image')
+    else:
+        asin_to_image = json.load(open(asin_to_image_path, 'r', encoding='utf-8'))
+        print(f"Loaded existing asin_to_image: {len(asin_to_image)} -> {asin_to_image_path}")
+
+    # If any files are missing, load metadata and create them
+    if need_to_load:
+        print(f"Loading metadata to create missing files: {', '.join(need_to_load)}")
+        st_time = time.time()
+        loaded_text, loaded_title, loaded_image = load_metadata(dataset_name)
+
+        if 'text' in need_to_load:
+            asin_to_text = {asin: text for asin, text in loaded_text.items() if asin in id2item.values()}
+            with open(asin_to_text_path, 'w', encoding='utf-8') as f:
+                json.dump(asin_to_text, f, ensure_ascii=False, indent=2)
+            print(f"Saved asin_to_text: {len(asin_to_text)} -> {asin_to_text_path}")
+
+        if 'title' in need_to_load:
+            asin_to_title = {asin: title for asin, title in loaded_title.items() if asin in id2item.values()}
+            with open(asin_to_title_path, 'w', encoding='utf-8') as f:
+                json.dump(asin_to_title, f, ensure_ascii=False, indent=2)
+            print(f"Saved asin_to_title: {len(asin_to_title)} -> {asin_to_title_path}")
+
+        if 'image' in need_to_load:
+            asin_to_image = {asin: url for asin, url in loaded_image.items() if asin in id2item.values()}
+            with open(asin_to_image_path, 'w', encoding='utf-8') as f:
+                json.dump(asin_to_image, f, ensure_ascii=False, indent=2)
+            print(f"Saved asin_to_image: {len(asin_to_image)} -> {asin_to_image_path}")
 
         print(f"Load + Save time taken: {time.time() - st_time:.2f} seconds")
 
@@ -542,33 +636,17 @@ def main():
     embedding_dir = os.path.join(save_dir, f'{embedding_model_saved_name}')
     os.makedirs(embedding_dir, exist_ok=True)
 
-    # Image2text embeddings
-    visual_attr_emb_path = os.path.join(embedding_dir, f'visual_attr.pkl')
-    if os.path.exists(visual_attr_emb_path):
-        print(f"Visual attr embeddings already exist: {visual_attr_emb_path}")
-    else:
-        visual_attr_embeds = generate_embeddings_with_gme(
-            model, asin_to_text, asin_to_image, asin_to_visual_attr, asin_to_visual_attr, batch_size, modality='visual_attr'
-        )
-        image2text_dim = pick_dim(visual_attr_embeds)
-        image2text_arr = to_ordered_array(visual_attr_embeds, id2item, image2text_dim)
-        with open(visual_attr_emb_path, 'wb') as f:
-            pickle.dump(image2text_arr, f)
-        print(f"Saved visual attr embeddings: {image2text_arr.shape} -> {visual_attr_emb_path}")
+    # Visual attribute embeddings
+    generate_and_save_embeddings(
+        embedding_dir, model, asin_to_visual_attr, {}, {}, batch_size,
+        modality='text', desc='Visual attr', id2item=id2item, filename='visual_attr'
+    )
 
-    # Fused image2text embeddings
-    text_visual_attr_emb_path = os.path.join(embedding_dir, f'text_visual_attr.pkl')
-    if os.path.exists(text_visual_attr_emb_path):
-        print(f"Text+Visual attr embeddings already exist: {text_visual_attr_emb_path}")
-    else:
-        text_visual_attr_embeds = generate_embeddings_with_gme(
-            model, asin_to_text, asin_to_image, asin_to_visual_attr, asin_to_visual_attr, batch_size, modality='text_visual_attr'
-        )
-        fused_image2text_dim = pick_dim(text_visual_attr_embeds)
-        fused_image2text_arr = to_ordered_array(text_visual_attr_embeds, id2item, fused_image2text_dim)
-        with open(text_visual_attr_emb_path, 'wb') as f:
-            pickle.dump(fused_image2text_arr, f)
-        print(f"Saved Text+Visual attr embeddings: {fused_image2text_arr.shape} -> {text_visual_attr_emb_path}")
+    # Fused text + visual attribute embeddings
+    generate_and_save_embeddings(
+        embedding_dir, model, asin_to_text, asin_to_visual_attr, {}, {}, batch_size,
+        modality='text_with_text', desc='Text+Visual attr', id2item=id2item, filename='text_with_visual_attr'
+    )
 
 
 if __name__ == '__main__':

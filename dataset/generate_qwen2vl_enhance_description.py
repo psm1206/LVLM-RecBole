@@ -641,7 +641,7 @@ def main():
         
         print(f"Load + Save time taken: {time.time() - st_time:.2f} seconds")
 
-    # visual attributes from image
+    # enhanced description from image
     enhanced_description_path = os.path.join(save_dir, f'{generative_model_saved_name}_enhanced_description.json')
     if os.path.exists(enhanced_description_path):
         print(f"Enhanced description already exist: {enhanced_description_path}")
