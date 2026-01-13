@@ -12,7 +12,7 @@ import numpy as np
 import torch
 from tqdm import tqdm
 from transformers import AutoModel
-from transformers import Qwen2VLForConditionalGeneration, AutoProcessor
+from transformers import Qwen2VLForConditionalGeneration, Qwen3VLForConditionalGeneration, AutoProcessor
 from transformers.utils.versions import require_version
 from qwen_vl_utils import process_vision_info
  
@@ -21,10 +21,12 @@ from utils.dataset import parse_args, seed_everything, amazon_dataset2fullname
 from utils.text import clean_metadata
 
 
-require_version(
-    "transformers<4.52.0",
-    "The remote code has some issues with transformers>=4.52.0, please downgrade: pip install transformers==4.51.3"
-)
+# require_version(
+#     "transformers<4.52.0",
+#     "The remote code has some issues with transformers>=4.52.0, please downgrade: pip install transformers==4.51.3"
+# )
+# transformers 4.51.0 -> Qwen2-VL
+# transformers 4.57.0 -> Qwen3-VL
 
 
 # Disable tokenizers parallelism warning
@@ -251,31 +253,45 @@ def generate_visual_attributes_with_vlm(asin_to_image, asin_to_title, asin_to_de
     error_count = 0
     
     PROMPT_TEMPLATE = (
-        "You are a professional beauty product analyst.\n"
-        "Your task is to analyze the product's **Title**, **Description**, and **Image** to extract exactly four key attributes in keywords.\n\n"
+        "You are a professional product visual analyst. Your goal is to extract discriminative physical features from the image to distinguish this product from others. "
+        "Reference the Title and Description for context, but prioritize what is actually visible in the image.\n\n"
         "### Guidelines:\n"
-        "1. **Reference All Inputs:** Use the Title and Description to understand the brand identity and functions, and the Image to confirm visual/physical details.\n"
-        "2. **Be Creative & Accurate:** Do not limit yourself to the examples provided in parentheses. Use the most precise and descriptive terms that fit this specific product.\n"
-        "3. **Format:** Use 1-3 words for each attribute. No full sentences.\n\n"
-        "### Product Information:\n"
-        "- **Title:** {title}\n"
-        "- **Existing Description:** {description}\n\n"
+        "1. Visual Evidence First: For 'Visible On-Product Text', only transcribe words you can clearly read in the image. If the text is illegible or not present, state 'None'. Do not assume text exists just because it is in the Title.\n"
+        "2. Fine-Grained Description: Avoid generic terms. Use specific descriptors for colors (e.g., champagne gold, matte teal), shapes (e.g., tapered cylinder, square-shouldered bottle), and textures.\n"
+        "3. Conciseness: Use only 1-4 words per attribute value.\n"
+        "4. Handling Missing Info: If a symbol or text is not clearly visible, you must state 'None'.\n\n"
+        "### Input Information:\n"
+        "- Title: {title}\n"
+        "- Description: {description}\n\n"
         "### Attributes to Extract:\n"
-        "1. Visual Style: (Look beyond examples like Professional/Minimalist; describe the actual aesthetic)\n"
-        "2. Material: (Identify the packaging/formulation texture; e.g., Frosted Glass, Creamy Liquid, Recycled Paper)\n"
-        "3. Purpose: (Specify the core benefit; e.g., Pore Tightening, Long-lasting Wear, Deep Nourishment)\n"
-        "4. Usage Context: (Identify the ideal setting; e.g., Nighttime Routine, On-the-go Touchups, Luxury Gift)\n\n"
+        "1. Color & Aesthetic Tone: Specific colors, gradients, or overall tone.\n"
+        "2. Structural Shape: Detailed silhouette including cap, lid, or applicator type.\n"
+        "3. Surface Finish: Material texture and light interaction (e.g., frosted, reflective, matte).\n"
+        "4. Container Mechanism: How the product is opened or dispensed.\n"
+        "5. Visible On-Product Text: Brand or product names clearly legible in the image. If none, 'None'.\n"
+        "6. Distinctive Icons: Visible logos, emblems, or unique patterns. If none, 'None'.\n\n"
         "### Output Format:\n"
-        "Visual Style: <value>\n"
-        "Material: <value>\n"
-        "Purpose: <value>\n"
-        "Usage Context: <value>\n\n"
+        "Color & Aesthetic Tone: <value>\n"
+        "Structural Shape: <value>\n"
+        "Surface Finish: <value>\n"
+        "Container Mechanism: <value>\n"
+        "Visible On-Product Text: <value>\n"
+        "Distinctive Icons: <value>\n\n"
         "Assistant:"
     )
 
-    vlm_model = Qwen2VLForConditionalGeneration.from_pretrained(
-        vlm_model_name, torch_dtype="auto", device_map=device
-    )
+    if 'Qwen3-VL' in vlm_model_name:
+        vlm_model = Qwen3VLForConditionalGeneration.from_pretrained(
+            vlm_model_name, torch_dtype="auto", device_map=device
+        )
+    elif 'Qwen2-VL' in vlm_model_name:
+        vlm_model = Qwen2VLForConditionalGeneration.from_pretrained(
+            vlm_model_name, torch_dtype="auto", device_map=device
+        )
+    else:
+        raise ValueError(f"Invalid model name: {vlm_model_name}")
+    print(f"Loaded {vlm_model_name} model")
+    
     processor = AutoProcessor.from_pretrained(vlm_model_name)
 
     asins_with_image = [asin for asin, url in asin_to_image.items() if isinstance(url, str) and url.strip()]
@@ -302,23 +318,30 @@ def generate_visual_attributes_with_vlm(asin_to_image, asin_to_title, asin_to_de
             out_ids_trimmed = out_ids[0][len(inputs.input_ids[0]):]
             output = processor.decode(out_ids_trimmed, skip_special_tokens=True).strip()
             
-            attr = {'style': 'N/A', 'material': 'N/A', 'purpose': 'N/A', 'context': 'N/A'}
+            attr = {'color_aesthetic': 'N/A', 'physical_shape': 'N/A', 'material_finish': 'N/A', 
+                    'form_container_type': 'N/A', 'visible_on_product_text': 'N/A', 'distinctive_marks_symbols': 'N/A'}
             for line in output.split('\n'):
                 line = line.strip()
-                if line.lower().startswith('visual style:'):
-                    attr['style'] = line.split(':', 1)[1].strip()
-                elif line.lower().startswith('material:'):
-                    attr['material'] = line.split(':', 1)[1].strip()
-                elif line.lower().startswith('purpose:'):
-                    attr['purpose'] = line.split(':', 1)[1].strip()
-                elif line.lower().startswith('usage context:'):
-                    attr['context'] = line.split(':', 1)[1].strip()
+                if line.lower().startswith('color & aesthetic tone:'):
+                    attr['color_aesthetic'] = line.split(':', 1)[1].strip()
+                elif line.lower().startswith('structural shape:'):
+                    attr['physical_shape'] = line.split(':', 1)[1].strip()
+                elif line.lower().startswith('surface finish:'):
+                    attr['material_finish'] = line.split(':', 1)[1].strip()
+                elif line.lower().startswith('container mechanism:'):
+                    attr['form_container_type'] = line.split(':', 1)[1].strip()
+                elif line.lower().startswith('visible on-product text:'):
+                    attr['visible_on_product_text'] = line.split(':', 1)[1].strip()
+                elif line.lower().startswith('distinctive icons:'):
+                    attr['distinctive_marks_symbols'] = line.split(':', 1)[1].strip()
 
             formatted_text = (
-                f"Visual Style is {attr['style']}; "
-                f"Material is {attr['material']}; "
-                f"Purpose is {attr['purpose']}; "
-                f"Usage Context is {attr['context']}."
+                f"Color & Aesthetic Tone is {attr['color_aesthetic']}; "
+                f"Structural Shape is {attr['physical_shape']}; "
+                f"Surface Finish is {attr['material_finish']}; "
+                f"Container Mechanism is {attr['form_container_type']}; "
+                f"Visible On-Product Text is {attr['visible_on_product_text']}; "
+                f"Distinctive Icons is {attr['distinctive_marks_symbols']}."
             )
             
             asin_to_visual_attr[asin] = formatted_text
@@ -327,6 +350,10 @@ def generate_visual_attributes_with_vlm(asin_to_image, asin_to_title, asin_to_de
             error_count += 1
             print(f"Error for {asin}: {str(e)}")
             continue
+
+        # print first 10 items of asin_to_visual_attr
+        if len(asin_to_visual_attr) <= 10 and asin in asin_to_visual_attr:
+            print(f"Visual attr for {asin}: {asin_to_visual_attr[asin]}")
 
         gc.collect()
         torch.cuda.empty_cache()
@@ -489,6 +516,9 @@ def main():
 
     short_name_dict = {'Qwen/Qwen2-VL-2B-Instruct': 'qwen2vl2b',
                         'Qwen/Qwen2-VL-7B-Instruct': 'qwen2vl7b',
+                        'Qwen/Qwen3-VL-2B-Instruct': 'qwen3vl2b',
+                        'Qwen/Qwen3-VL-4B-Instruct': 'qwen3vl4b',
+                        'Qwen/Qwen3-VL-8B-Instruct': 'qwen3vl8b',
                         'Alibaba-NLP/gme-Qwen2-VL-2B-Instruct': 'gme_qwen2vl2b',
                         'Alibaba-NLP/gme-Qwen2-VL-7B-Instruct': 'gme_qwen2vl7b'}
 
@@ -571,7 +601,7 @@ def main():
         print(f"Load + Save time taken: {time.time() - st_time:.2f} seconds")
 
     # image attributes from image
-    image_attr_path = os.path.join(save_dir, f'{generative_model_saved_name}_image_attr_v2.json')
+    image_attr_path = os.path.join(save_dir, f'{generative_model_saved_name}_image_attr_v3.json')
     if os.path.exists(image_attr_path):
         print(f"Image attr already exist: {image_attr_path}")
         asin_to_visual_attr = json.load(open(image_attr_path, 'r', encoding='utf-8'))
@@ -598,13 +628,13 @@ def main():
     # Image attribute embeddings
     generate_and_save_embeddings(
         embedding_dir, model, asin_to_visual_attr, {}, {}, batch_size,
-        modality='text', desc='Image attr', id2item=id2item, filename='image_attr_v2'
+        modality='text', desc='Image attr', id2item=id2item, filename='image_attr_v3'
     )
 
     # Fused text + image attribute embeddings
     generate_and_save_embeddings(
         embedding_dir, model, asin_to_text, asin_to_visual_attr, {}, batch_size,
-        modality='text_with_text', desc='Text+Image attr', id2item=id2item, filename='text_with_image_attr_v2'
+        modality='text_with_text', desc='Text+Image attr', id2item=id2item, filename='text_with_image_attr_v3'
     )
 
 

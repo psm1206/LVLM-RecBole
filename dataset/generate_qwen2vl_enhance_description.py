@@ -12,7 +12,7 @@ import numpy as np
 import torch
 from tqdm import tqdm
 from transformers import AutoModel
-from transformers import Qwen2VLForConditionalGeneration, AutoProcessor
+from transformers import Qwen2VLForConditionalGeneration, Qwen3VLForConditionalGeneration, AutoProcessor
 from transformers.utils.versions import require_version
 from qwen_vl_utils import process_vision_info
  
@@ -21,10 +21,12 @@ from utils.dataset import parse_args, seed_everything, amazon_dataset2fullname
 from utils.text import clean_metadata
 
 
-require_version(
-    "transformers<4.52.0",
-    "The remote code has some issues with transformers>=4.52.0, please downgrade: pip install transformers==4.51.3"
-)
+# require_version(
+#     "transformers<4.52.0",
+#     "The remote code has some issues with transformers>=4.52.0, please downgrade: pip install transformers==4.51.3"
+# )
+# transformers 4.51.0 -> Qwen2-VL
+# transformers 4.57.0 -> Qwen3-VL
 
 
 # Disable tokenizers parallelism warning
@@ -195,9 +197,17 @@ def generate_text_description_from_image_with_vlm(asin_to_image, asin_to_title, 
         "Assistant:"
     )
 
-    vlm_model = Qwen2VLForConditionalGeneration.from_pretrained(
-        vlm_model_name, torch_dtype="auto", device_map=device
-    )
+    if 'Qwen3-VL' in vlm_model_name:
+        vlm_model = Qwen3VLForConditionalGeneration.from_pretrained(
+            vlm_model_name, torch_dtype="auto", device_map=device
+        )
+    elif 'Qwen2-VL' in vlm_model_name:
+        vlm_model = Qwen2VLForConditionalGeneration.from_pretrained(
+            vlm_model_name, torch_dtype="auto", device_map=device
+        )
+    else:
+        raise ValueError(f"Invalid model name: {vlm_model_name}")
+    print(f"Loaded {vlm_model_name} model")
     
     processor = AutoProcessor.from_pretrained(vlm_model_name)
 
@@ -244,95 +254,8 @@ def generate_text_description_from_image_with_vlm(asin_to_image, asin_to_title, 
 
     return asin_to_caption
 
-def generate_visual_attributes_with_vlm(asin_to_image, asin_to_title, vlm_model_name, device):
-    """
-    이미지로부터 구조화된 속성과 정제된 설명을 추출합니다.
-    """
-    asin_to_visual_attr: Dict[str, dict] = {}
-    error_count = 0
-    
-    # 텍스트 정보와의 중복을 최소화하고 시각적 '특징'에 집중하는 프롬프트
-    PROMPT_TEMPLATE = (
-        "You are a professional beauty product analyst.\n"
-        "Analyze the product image and provide exactly four attributes in keywords. "
-        "Do not use full sentences. Use 1-3 words for each value.\n\n"
-        "1. Visual Style: (e.g., Professional, Luxurious, Minimalist, Eco-friendly)\n"
-        "2. Material: (e.g., Matte Plastic, Clear Glass, Metal, Cardboard)\n"
-        "3. Purpose: (e.g., Skin Hydration, Sun Protection, Color Correction, Hair Styling)\n"
-        "4. Usage Context: (e.g., Daily Home Use, Professional Salon, Travel, Gift-giving)\n\n"
-        "Output Format:\n"
-        "Visual Style: <value>\n"
-        "Material: <value>\n"
-        "Purpose: <value>\n"
-        "Usage Context: <value>\n"
-        "Assistant:"
-    )
 
-    # 모델 및 프로세서 로드는 기존과 동일
-    vlm_model = Qwen2VLForConditionalGeneration.from_pretrained(
-        vlm_model_name, torch_dtype="auto", device_map=device
-    )
-    processor = AutoProcessor.from_pretrained(vlm_model_name)
-
-    asins_with_image = [asin for asin, url in asin_to_image.items() if isinstance(url, str) and url.strip()]
-    for asin in tqdm(asins_with_image, desc='Extracting Visual Attributes'):
-        url = asin_to_image[asin]
-        # title = asin_to_title[asin]
-        
-        try:
-            messages = [{
-                "role": "user",
-                "content": [
-                    {"type": "image", "image": url},
-                    {"type": "text", "text": PROMPT_TEMPLATE},
-                ],
-            }]
-            text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-            img_inp, vid_inp = process_vision_info(messages)
-            inputs = processor(text=text, images=img_inp, videos=vid_inp, return_tensors="pt").to(device)
-            
-            with torch.inference_mode():
-                out_ids = vlm_model.generate(**inputs, max_new_tokens=80)
-            
-            out_ids_trimmed = out_ids[0][len(inputs.input_ids[0]):]
-            output = processor.decode(out_ids_trimmed, skip_special_tokens=True).strip()
-            
-            # 파싱 로직
-            attr = {'style': 'N/A', 'material': 'N/A', 'purpose': 'N/A', 'context': 'N/A'}
-            for line in output.split('\n'):
-                line = line.strip()
-                if line.lower().startswith('visual style:'):
-                    attr['style'] = line.split(':', 1)[1].strip()
-                elif line.lower().startswith('material:'):
-                    attr['material'] = line.split(':', 1)[1].strip()
-                elif line.lower().startswith('purpose:'):
-                    attr['purpose'] = line.split(':', 1)[1].strip()
-                elif line.lower().startswith('usage context:'):
-                    attr['context'] = line.split(':', 1)[1].strip()
-
-            formatted_text = (
-                f"Visual Style is {attr['style']}; "
-                f"Material is {attr['material']}; "
-                f"Purpose is {attr['purpose']}; "
-                f"Usage Context is {attr['context']}."
-            )
-            
-            # ASIN별로 완성된 문장을 바로 할당
-            asin_to_visual_attr[asin] = formatted_text
-
-        except Exception as e:
-            error_count += 1
-            print(f"Error for {asin}: {str(e)}")
-            continue
-
-        gc.collect()
-        torch.cuda.empty_cache()
-
-    del vlm_model
-    return asin_to_visual_attr    
-
-
-def generate_ehanced_description_with_vlm(asin_to_image, asin_to_title, asin_to_description, vlm_model_name, device):
+def generate_enhanced_description_with_vlm(asin_to_image, asin_to_title, asin_to_description, vlm_model_name, device):
     """
     Generated text description is used for image2text embedding.
     Return format: {asin: {caption: text description, title: title, image_url: image url}}
@@ -341,24 +264,34 @@ def generate_ehanced_description_with_vlm(asin_to_image, asin_to_title, asin_to_
     error_count = 0
     
     PROMPT_TEMPLATE = (
-        "You are a professional e-commerce copywriter. Your goal is to enhance and enrich an existing product description using the provided image.\n\n"
+        "You are a professional VLM-based item analyst. Your goal is to 'enhance' the existing product description by integrating high-fidelity visual details from the image without losing the original information.\n\n"
         "### Instructions:\n"
-        "1. Carefully analyze the product image and the 'Original Description' provided below.\n"
-        "2. Identify visual details in the image that are missing or brief in the text (e.g., specific textures, material finish, exact color shades, ergonomic shapes, or fine design elements).\n"
-        "3. Rewrite the description into a single, cohesive, and more detailed version that integrates these visual findings.\n"
-        "4. Focus on being visually grounded and informative to help a potential buyer 'see' the product clearly.\n\n"
+        "1. Preserve the Base: Use the 'Original Description' as your foundation. Keep all its core information, including any brand or product names already present in it. Do not discard or significantly alter its original meaning.\n"
+        "2. Inject Visual Details: Seamlessly weave in specific visual attributes visible in the image that are missing from the text (e.g., exact color shades, material textures, geometric shapes, or container mechanisms).\n"
+        "3. Visual Evidence Only: When adding new information, focus exclusively on physical, visual facts you can see in the image.\n"
+        "4. Balanced Integration: Merge the visual evidence with the functional context from the 'Original Description' into a single, cohesive paragraph.\n\n"
         "### Constraints:\n"
-        "- Do NOT start with phrases like 'The image shows' or 'In the picture'.\n"
+        "- Do not use introductory phrases like 'This image shows' or 'The product features'.\n"
+        "- Avoid marketing fluff (e.g., 'stunning', 'must-have', 'perfect gift').\n"
+        "- Keep the final result concise: Max 3-4 sentences (Under 100 words).\n"
         "- Provide the enhanced description directly.\n\n"
-        "### Original Description:\n"
-        "{description}\n\n"
+        "### Input Information:\n"
+        "- Original Description: {description}\n\n"
         "### Enhanced Description:\n"
         "Assistant:"
     )
 
-    vlm_model = Qwen2VLForConditionalGeneration.from_pretrained(
-        vlm_model_name, torch_dtype="auto", device_map=device
-    )
+    if 'Qwen3-VL' in vlm_model_name:
+        vlm_model = Qwen3VLForConditionalGeneration.from_pretrained(
+            vlm_model_name, torch_dtype="auto", device_map=device
+        )
+    elif 'Qwen2-VL' in vlm_model_name:
+        vlm_model = Qwen2VLForConditionalGeneration.from_pretrained(
+            vlm_model_name, torch_dtype="auto", device_map=device
+        )
+    else:
+        raise ValueError(f"Invalid model name: {vlm_model_name}")
+    print(f"Loaded {vlm_model_name} model")
     
     processor = AutoProcessor.from_pretrained(vlm_model_name)
 
@@ -374,7 +307,7 @@ def generate_ehanced_description_with_vlm(asin_to_image, asin_to_title, asin_to_
                 "role": "user",
                 "content": [
                     {"type": "image", "image": url},
-                    {"type": "text", "text": PROMPT_TEMPLATE.format(description=description)},
+                    {"type": "text", "text": PROMPT_TEMPLATE.format(title=title, description=description)},
                 ],
             }]
             text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
@@ -395,6 +328,11 @@ def generate_ehanced_description_with_vlm(asin_to_image, asin_to_title, asin_to_
             error_count += 1
             print(f"Error generating enhanced description for {asin}: {str(individual_error)}")
             continue
+
+        # print first 10 items of asin_to_enhanced_description
+        if len(asin_to_enhanced_description) <= 10 and asin in asin_to_enhanced_description:
+            print(f"Enhanced description for {asin}: {asin_to_enhanced_description[asin]['enhanced_description']}")
+
         # memory management (stability for large batches)
         gc.collect()
         if torch.cuda.is_available():
@@ -561,6 +499,9 @@ def main():
 
     short_name_dict = {'Qwen/Qwen2-VL-2B-Instruct': 'qwen2vl2b',
                         'Qwen/Qwen2-VL-7B-Instruct': 'qwen2vl7b',
+                        'Qwen/Qwen3-VL-2B-Instruct': 'qwen3vl2b',
+                        'Qwen/Qwen3-VL-4B-Instruct': 'qwen3vl4b',
+                        'Qwen/Qwen3-VL-8B-Instruct': 'qwen3vl8b',
                         'Alibaba-NLP/gme-Qwen2-VL-2B-Instruct': 'gme_qwen2vl2b',
                         'Alibaba-NLP/gme-Qwen2-VL-7B-Instruct': 'gme_qwen2vl7b'}
 
@@ -643,12 +584,12 @@ def main():
         print(f"Load + Save time taken: {time.time() - st_time:.2f} seconds")
 
     # enhanced description from image
-    enhanced_description_path = os.path.join(save_dir, f'{generative_model_saved_name}_enhanced_description.json')
+    enhanced_description_path = os.path.join(save_dir, f'{generative_model_saved_name}_enhanced_description_v2.json')
     if os.path.exists(enhanced_description_path):
         print(f"Enhanced description already exist: {enhanced_description_path}")
         asin_to_enhanced_description = json.load(open(enhanced_description_path, 'r', encoding='utf-8'))
     else:
-        asin_to_enhanced_description = generate_ehanced_description_with_vlm(
+        asin_to_enhanced_description = generate_enhanced_description_with_vlm(
             asin_to_image, asin_to_title, asin_to_description, generative_model, device
         )
         with open(enhanced_description_path, 'w', encoding='utf-8') as f:
@@ -679,13 +620,13 @@ def main():
     # Enhanced description embeddings
     generate_and_save_embeddings(
         embedding_dir, model, asin_to_enhanced_description, {}, {}, batch_size,
-        modality='text', desc='Enhanced description', id2item=id2item, filename='enhanced_description'
+        modality='text', desc='Enhanced description', id2item=id2item, filename='enhanced_description_v2'
     )
 
     # Text+enhanced description embeddings
     generate_and_save_embeddings(
         embedding_dir, model, asin_to_text, asin_to_enhanced_description, {}, batch_size,
-        modality='text_with_text', desc='Text+Enhanced description', id2item=id2item, filename='text_enhanced_description'
+        modality='text_with_text', desc='Text+Enhanced description', id2item=id2item, filename='text_enhanced_description_v2'
     )
 
 
