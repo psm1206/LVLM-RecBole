@@ -483,8 +483,9 @@ def generate_embeddings_with_gme(model, asin_to_text1, asin_to_text2, asin_to_im
     else:
         raise ValueError(f"Invalid modality: {modality}")
     
+    total_items = max(1, len(embeds) + error_count)
     print(f"{modality} embeddings error count: {error_count}")
-    print(f"{modality} embeddings error rate: {error_count / len(embeds) * 100:.2f}%")
+    print(f"{modality} embeddings error rate: {error_count / total_items * 100:.2f}%")
 
     return embeds
 
@@ -662,6 +663,9 @@ def main():
         trust_remote_code=True,
     )
     model = model.to(device)
+
+    # Extract description from asin_to_enhanced_description
+    asin_to_enhanced_description = {asin: item_metadata['enhanced_description'] for asin, item_metadata in asin_to_enhanced_description.items()}
 
     embedding_dir = os.path.join(save_dir, f'{embedding_model_saved_name}')
     os.makedirs(embedding_dir, exist_ok=True)

@@ -335,14 +335,14 @@ def generate_visual_attributes_with_vlm(asin_to_image, asin_to_title, asin_to_de
     return asin_to_visual_attr    
 
 
-def generate_embeddings_with_gme(model, asin_to_text, asin_to_image, asin_to_caption, asin_to_visual_attr, batch_size, modality, desc):
+def generate_embeddings_with_gme(model, asin_to_text1, asin_to_text2, asin_to_image, batch_size, modality, desc):
     embeds = {}
     error_count = 0
 
     if modality == 'text':
-        asins_with_text = [asin for asin, txt in asin_to_text.items() if isinstance(txt, str) and txt.strip()]
-        for batch_asins in tqdm(list(batched(asins_with_text, batch_size)), desc='Text embeddings'):
-            texts = [asin_to_text[a] for a in batch_asins]
+        asins_with_text = [asin for asin, txt in asin_to_text1.items() if isinstance(txt, str) and txt.strip()]
+        for batch_asins in tqdm(list(batched(asins_with_text, batch_size)), desc=f'{desc} Text embeddings'):
+            texts = [asin_to_text1[a] for a in batch_asins]
             with torch.inference_mode():
                 emb = model.get_text_embeddings(texts=texts)
             emb_np = emb.detach().cpu().numpy()
@@ -351,7 +351,7 @@ def generate_embeddings_with_gme(model, asin_to_text, asin_to_image, asin_to_cap
 
     elif modality == 'image':
         asins_with_image = [asin for asin, url in asin_to_image.items() if isinstance(url, str) and url.strip()]
-        for batch_asins in tqdm(list(batched(asins_with_image, batch_size)), desc='Image embeddings'):
+        for batch_asins in tqdm(list(batched(asins_with_image, batch_size)), desc=f'{desc} Image embeddings'):
             urls = [asin_to_image[a] for a in batch_asins]
             try:
                 with torch.inference_mode():
@@ -371,44 +371,24 @@ def generate_embeddings_with_gme(model, asin_to_text, asin_to_image, asin_to_cap
                         print(f"Error getting image embeddings for {a}")
                         continue
 
-    elif modality == 'image2text':
-        asins_with_image2text = [asin for asin, caption in asin_to_caption.items() if isinstance(caption, str) and caption.strip()]
-        for batch_asins in tqdm(list(batched(asins_with_image2text, batch_size)), desc='Image2text embeddings'):
-            captions = [asin_to_caption[a] for a in batch_asins]
-            with torch.inference_mode():
-                emb = model.get_text_embeddings(texts=captions)
-            emb_np = emb.detach().cpu().numpy()
-            for a, e in zip(batch_asins, emb_np):
-                embeds[a] = e
-
-    elif modality == 'visual_attr':
-        asins_with_text = [asin for asin, txt in asin_to_visual_attr.items() if isinstance(txt, str) and txt.strip()]
-        for batch_asins in tqdm(list(batched(asins_with_text, batch_size)), desc='Visual Attr embeddings'):
-            texts = [asin_to_visual_attr[a] for a in batch_asins]
+    elif modality == 'text_with_text':
+        asins_with_text1 = [asin for asin, txt in asin_to_text1.items() if isinstance(txt, str) and txt.strip()]
+        asins_with_text2 = [asin for asin, txt in asin_to_text2.items() if isinstance(txt, str) and txt.strip()]
+        asins_with_both = [a for a in asins_with_text2 if a in asins_with_text1]
+        for batch_asins in tqdm(list(batched(asins_with_both, batch_size)), desc=f'{desc} Text+Text embeddings'):
+            # concatenate text and text
+            texts = [asin_to_text1[a] + ' ' + asin_to_text2[a] for a in batch_asins]
             with torch.inference_mode():
                 emb = model.get_text_embeddings(texts=texts)
             emb_np = emb.detach().cpu().numpy()
             for a, e in zip(batch_asins, emb_np):
-                embeds[a] = e
+                embeds[a] = e                
 
-    elif modality == 'text_visual_attr':
-        asins_with_text = [asin for asin, txt in asin_to_text.items() if isinstance(txt, str) and txt.strip()]
-        asin_to_visual_attr = [asin for asin, caption in asin_to_visual_attr.items() if isinstance(caption, str) and caption.strip()]
-        asins_with_both = [a for a in asin_to_visual_attr if a in asins_with_text]
-        for batch_asins in tqdm(list(batched(asins_with_both, batch_size)), desc='Fused (Text + Visual attr) embeddings'):
-            # concatenate text and visual attr
-            texts = [asin_to_text[a] + ' ' + asin_to_visual_attr[a] for a in batch_asins]
-            with torch.inference_mode():
-                emb = model.get_text_embeddings(texts=texts)
-                emb_np = emb.detach().cpu().numpy()
-                for a, e in zip(batch_asins, emb_np):
-                    embeds[a] = e                
-
-    elif modality == 'fused':
-        asins_with_text = [asin for asin, txt in asin_to_text.items() if isinstance(txt, str) and txt.strip()]
+    elif modality == 'text_with_image':
+        asins_with_text = [asin for asin, txt in asin_to_text1.items() if isinstance(txt, str) and txt.strip()]
         asins_with_both = [a for a in asins_with_text if a in asin_to_image]
-        for batch_asins in tqdm(list(batched(asins_with_both, batch_size)), desc='Fused (Text + Image) embeddings'):
-            texts = [asin_to_text[a] for a in batch_asins]
+        for batch_asins in tqdm(list(batched(asins_with_both, batch_size)), desc=f'{desc} Text+Image embeddings'):
+            texts = [asin_to_text1[a] for a in batch_asins]
             urls = [asin_to_image[a] for a in batch_asins]
             try:
                 with torch.inference_mode():
@@ -421,34 +401,21 @@ def generate_embeddings_with_gme(model, asin_to_text, asin_to_image, asin_to_cap
                 for a in batch_asins:
                     try:
                         with torch.inference_mode():
-                            emb = model.get_fused_embeddings(texts=[asin_to_text[a]], images=[asin_to_image[a]])
+                            emb = model.get_fused_embeddings(texts=[asin_to_text1[a]], images=[asin_to_image[a]])
                         embeds[a] = emb.detach().cpu().numpy()[0]
                     except Exception:
                         error_count += 1
                         print(f"Error getting fused embeddings for {a}")
                         continue
 
-    elif modality == 'image2text_fused':
-        asins_with_text = [asin for asin, txt in asin_to_text.items() if isinstance(txt, str) and txt.strip()]
-        asins_with_image2text = [asin for asin, caption in asin_to_caption.items() if isinstance(caption, str) and caption.strip()]
-        asins_with_both = [a for a in asins_with_image2text if a in asins_with_text]
-        for batch_asins in tqdm(list(batched(asins_with_both, batch_size)), desc='Fused (Text + Image2text) embeddings'):
-            # concatenate text and caption
-            texts = [asin_to_text[a] + ' image description is ' + asin_to_caption[a] for a in batch_asins]
-            with torch.inference_mode():
-                emb = model.get_text_embeddings(texts=texts)
-                emb_np = emb.detach().cpu().numpy()
-                for a, e in zip(batch_asins, emb_np):
-                    embeds[a] = e 
-
     else:
         raise ValueError(f"Invalid modality: {modality}")
     
-    total_items = max(1, len(embeds) + error_count)
-    print(f"{desc} ({modality}) embeddings error count: {error_count}")
-    print(f"{desc} ({modality}) embeddings error rate: {error_count / total_items * 100:.2f}%")
+    print(f"{modality} embeddings error count: {error_count}")
+    print(f"{modality} embeddings error rate: {error_count / len(embeds) * 100:.2f}%")
 
     return embeds
+
 
 
 def to_ordered_array(embeds, id2item, fill_dim: int) -> np.ndarray:
@@ -467,34 +434,6 @@ def pick_dim(d) -> int:
     for v in d.values():
         return int(v.shape[-1])
     return 0
-
-
-def generate_and_save_embeddings(
-    embedding_dir: str,
-    model,
-    asin_to_text: Dict,
-    asin_to_image: Dict,
-    asin_to_caption: Dict,
-    asin_to_visual_attr: Dict,
-    batch_size: int,
-    modality: str,
-    desc: str,
-    id2item: Dict[str, str],
-    filename: str
-):
-    emb_path = os.path.join(embedding_dir, f'{filename}.pkl')
-    if os.path.exists(emb_path):
-        print(f"{desc} embeddings already exist: {emb_path}")
-        return
-
-    embeds = generate_embeddings_with_gme(
-        model, asin_to_text, asin_to_image, asin_to_caption, asin_to_visual_attr, batch_size, modality=modality, desc=desc
-    )
-    emb_dim = pick_dim(embeds)
-    emb_arr = to_ordered_array(embeds, id2item, emb_dim)
-    with open(emb_path, 'wb') as f:
-        pickle.dump(emb_arr, f)
-    print(f"Saved {desc} embeddings: {emb_arr.shape} -> {emb_path}")
 
 
 def generate_and_save_embeddings(
@@ -535,7 +474,7 @@ def generate_and_save_embeddings(
         emb_arr = to_ordered_array(embeds, id2item, emb_dim)
         with open(emb_path, 'wb') as f:
             pickle.dump(emb_arr, f)
-        print(f"Saved {desc} embeddings: {emb_arr.shape} -> {emb_path}")    
+        print(f"Saved {desc} embeddings: {emb_arr.shape} -> {emb_path}")
 
 
 def main():
@@ -664,7 +603,7 @@ def main():
 
     # Fused text + image attribute embeddings
     generate_and_save_embeddings(
-        embedding_dir, model, asin_to_text, asin_to_visual_attr, {}, {}, batch_size,
+        embedding_dir, model, asin_to_text, asin_to_visual_attr, {}, batch_size,
         modality='text_with_text', desc='Text+Image attr', id2item=id2item, filename='text_with_image_attr_v2'
     )
 
