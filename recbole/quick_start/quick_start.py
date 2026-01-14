@@ -197,7 +197,7 @@ def run_recbole(
     from pathlib import Path
     save_dir = Path(result_path)
     save_dir.mkdir(parents=True, exist_ok=True)
-    if config['model'].lower() == 'lvlm_emb_zeroshot':
+    if 'lvlm_emb_zeroshot' in config['model'].lower():
         save_path = save_dir / f"{config['dataset']}_{config['model']}.csv"
         header = f"model, seed, text_enc, agg_method, use_pca, valid ndcg@20, {key_str}, {head_key_str}, {tail_key_str}\n"
         write_str = f"{config['model']}, {config['seed']}, {config['text_encoder']}, {config['agg_method']}, {config['use_pca']}, 0, {test_str}, {head_test_str}, {tail_test_str}\n"

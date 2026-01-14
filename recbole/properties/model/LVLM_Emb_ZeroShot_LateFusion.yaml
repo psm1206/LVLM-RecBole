@@ -1,0 +1,5 @@
+hidden_size: 64                 # (int) The number of features in the hidden state.
+agg_method: 'exp_decay'        # (str) The aggregation method. Range in ['exp_decay', 'mean'].
+late_fusion_weight: 0.7          # (float) The weight of the late fusion. Range in [0, 1].
+text_encoder: 'qwen3vl_emb2b/text' # (str) The text encoder.
+image_encoder: 'qwen3vl_emb2b/image' # (str) The image encoder.
