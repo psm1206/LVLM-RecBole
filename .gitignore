@@ -50,3 +50,6 @@ significance_test.py
 *.pkl
 /tmp*
 *.json
+
+# qwen3-vl-embedding
+/src/*
