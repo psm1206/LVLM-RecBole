@@ -10,20 +10,15 @@ Zero-shot Recommendation with Extracted LVLM Embeddings
 
 import torch
 from torch import nn
-import torch.nn.functional as F
 import numpy as np
 import json
 import pickle
-from sklearn.decomposition import PCA
-import time
-import os
-
 from recbole.model.abstract_recommender import SequentialRecommender
 
 
 class LVLM_Emb_ZeroShot_LateFusion(SequentialRecommender):
     r"""
-    Zero-shot Recommendation with Extracted LVLM Embeddings
+    Zero-shot Recommendation with Extracted LVLM Embeddings and Late Fusion
     [Note] LVLM Embedding won't be trained and directly used as item embedding.
 
     """
