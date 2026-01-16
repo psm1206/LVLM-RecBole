@@ -91,6 +91,7 @@ def load_metadata(dataset_name: str) -> Tuple[Dict[str, str], Dict[str, str]]:
     meta_path = os.path.join(dataset_name, f'meta_{dataset_full_name}.json')
     asin_to_text = {}
     asin_to_title = {}
+    asin_to_description = {}
     asin_to_image = {}
 
     # 1) 라인 파싱 후 DataFrame 구성
@@ -155,8 +156,9 @@ def load_metadata(dataset_name: str) -> Tuple[Dict[str, str], Dict[str, str]]:
         text_formatted = _build_text(obj_clean, dataset_full_name)
         asin_to_text[asin] = text_formatted
         asin_to_title[asin] = row.get('title', '')
+        asin_to_description[asin] = row.get('description', '')
 
-    return asin_to_text, asin_to_title, asin_to_image
+    return asin_to_text, asin_to_title, asin_to_description, asin_to_image
 
 
 def load_id2item(dataset_name: str) -> Dict[str, str]:
